@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import RungRinhCore
 import ServiceManagement
@@ -23,6 +24,8 @@ final class AppModel: ObservableObject {
     private var timer: Timer?
     private var updateTimer: Timer?
     private let updater = Updater()
+    private var lastUpdateCheck: Date?
+    private var wakeObserver: NSObjectProtocol?
     let currentVersion = Updater.currentVersion
 
     init() {
@@ -34,6 +37,12 @@ final class AppModel: ObservableObject {
         }
         Task { await checkForUpdate(manual: false) }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.checkForUpdate(manual: false) }
+        }
+        // Lid opened / Mac woke up: the 6h timer may have been asleep the whole time.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
             Task { @MainActor in await self?.checkForUpdate(manual: false) }
         }
     }
@@ -132,6 +141,12 @@ final class AppModel: ObservableObject {
 
     // MARK: - Updates
 
+    /// Called when the popover opens; cheap enough but no need to hit GitHub on every click.
+    func checkForUpdateIfStale() {
+        if let last = lastUpdateCheck, Date().timeIntervalSince(last) < 30 * 60 { return }
+        Task { await checkForUpdate(manual: false) }
+    }
+
     func checkForUpdate(manual: Bool) async {
         guard let current = currentVersion else {
             if manual { updateStatus = "Đang chạy ngoài app bundle, không kiểm tra được" }
@@ -139,6 +154,7 @@ final class AppModel: ObservableObject {
         }
         guard !checkingUpdate, !installingUpdate else { return }
         checkingUpdate = true
+        lastUpdateCheck = Date()
         defer { checkingUpdate = false }
         do {
             update = try await updater.availableUpdate(current: current)

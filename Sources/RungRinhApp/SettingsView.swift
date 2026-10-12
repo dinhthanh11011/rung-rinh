@@ -33,7 +33,10 @@ struct SettingsView: View {
         }
         .padding(14)
         .frame(width: 380)
-        .onAppear { model.reload() }
+        .onAppear {
+            model.reload()
+            model.checkForUpdateIfStale()
+        }
     }
 
     // MARK: - Sections
