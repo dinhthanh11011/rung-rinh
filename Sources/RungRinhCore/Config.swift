@@ -98,6 +98,8 @@ public struct Config: Codable, Equatable, Sendable {
     public var idleSeconds = 120
     public var quietHours = QuietHours()
     public var events = EventToggles()
+    /// The menu bar app installs new GitHub releases by itself.
+    public var autoUpdate = true
 
     public init() {}
 
@@ -115,6 +117,7 @@ public struct Config: Codable, Equatable, Sendable {
         idleSeconds = try c.decodeIfPresent(Int.self, forKey: .idleSeconds) ?? d.idleSeconds
         quietHours = try c.decodeIfPresent(QuietHours.self, forKey: .quietHours) ?? d.quietHours
         events = try c.decodeIfPresent(EventToggles.self, forKey: .events) ?? d.events
+        autoUpdate = try c.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? d.autoUpdate
     }
 
     public var isConfigured: Bool {

@@ -223,6 +223,25 @@ struct HookHandlerTests {
     }
 }
 
+struct UpdaterTests {
+    func testVersionCompare() {
+        check(Version("v0.1.0")! < Version("0.2.0")!)
+        check(Version("0.1.9")! < Version("v0.1.10")!)
+        check(Version("1.0")! == Version("1.0.0")!)
+        check(!(Version("1.2.0-beta")! < Version("1.2.0")!))
+        check(Version("latest") == nil)
+        check(Version("") == nil)
+    }
+
+    func testParseRelease() throws {
+        let json = #"{"tag_name":"v0.2.0","body":"notes","html_url":"https://github.com/x/y/releases/v0.2.0","assets":[]}"#
+        let r = try Updater.parse(Data(json.utf8))
+        check(r.tag == "v0.2.0")
+        check(r.version == Version("0.2.0"))
+        check(r.notes == "notes")
+    }
+}
+
 // MARK: - Runner
 
 nonisolated(unsafe) var failures = 0
@@ -263,6 +282,10 @@ await run("testInstallIntoMissingFile") { try HookInstallerTests().testInstallIn
 print("HookHandlerTests")
 await run("testPromptThenStopPushesWithDuration") { try await HookHandlerTests().testPromptThenStopPushesWithDuration() }
 await run("testTranscriptLastAssistantText") { try HookHandlerTests().testTranscriptLastAssistantText() }
+
+print("UpdaterTests")
+await run("testVersionCompare") { UpdaterTests().testVersionCompare() }
+await run("testParseRelease") { try UpdaterTests().testParseRelease() }
 
 print(failures == 0 ? "\nAll tests passed" : "\n\(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

@@ -8,7 +8,9 @@ App trên menu bar macOS kèm CLI, đẩy thông báo lên iPhone qua **Bark** h
 curl -fsSL https://raw.githubusercontent.com/dinhthanh11011/rung-rinh/main/install.sh | bash
 ```
 
-Lệnh này tải bản release mới nhất (universal, chạy được trên cả Apple Silicon lẫn Intel), cài vào `~/Applications/RungRinh.app` và link CLI vào `~/.local/bin/rungrinh`. Muốn cập nhật thì chạy lại đúng lệnh đó.
+Lệnh này tải bản release mới nhất (universal, chạy được trên cả Apple Silicon lẫn Intel), cài vào `~/Applications/RungRinh.app` và link CLI vào `~/.local/bin/rungrinh`.
+
+**Cập nhật:** app tự kiểm tra GitHub release lúc mở và mỗi 6 giờ. Có bản mới thì nó tự cài rồi mở lại (tắt được bằng ô "Tự động cài bản mới" trong popover), hoặc bạn bấm nút **Cập nhật**. Từ terminal thì dùng `rungrinh update`, hoặc chạy lại lệnh cài ở trên.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dinhthanh11011/rung-rinh/main/install.sh | bash -s -- --hooks       # cài luôn hook Claude Code
@@ -52,6 +54,7 @@ rungrinh run -- gh run watch         # CI xong là đồng hồ rung
 eval "$(rungrinh shell-init zsh)"    # trong ~/.zshrc: lệnh nào chạy > $RUNGRINH_MIN (30s) cũng tự push
 rungrinh on | off | snooze 1h | snooze morning | snooze off
 rungrinh status | history 20
+rungrinh version | update            # xem phiên bản / cài bản release mới nhất
 rungrinh config set bark.key XXXX    # cấu hình không cần mở app (dotfiles, máy CI)
 rungrinh install-hooks | uninstall-hooks
 ```
@@ -64,6 +67,7 @@ Config lưu ở `~/.config/rungrinh/config.json` (quyền 600), dùng chung cho 
 swift build
 swift run selftest      # test (dạng executable, vì XCTest / swift-testing cần Xcode)
 swift run RungRinhApp   # chạy app trực tiếp
+swift scripts/make-icon.swift         # vẽ lại Resources/AppIcon.icns
 scripts/release.sh v0.2.0 "ghi chú"   # build universal + tạo GitHub release cho install.sh
 ```
 

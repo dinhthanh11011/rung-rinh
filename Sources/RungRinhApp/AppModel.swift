@@ -11,12 +11,19 @@ final class AppModel: ObservableObject {
     @Published var status: String?
     @Published var sending = false
     @Published var launchAtLogin = false
+    @Published var update: Release?
+    @Published var updateStatus: String?
+    @Published var checkingUpdate = false
+    @Published var installingUpdate = false
 
     let store = ConfigStore()
     private let installer = ClaudeHookInstaller()
     private var saveTask: Task<Void, Never>?
     private var dirty = false
     private var timer: Timer?
+    private var updateTimer: Timer?
+    private let updater = Updater()
+    let currentVersion = Updater.currentVersion
 
     init() {
         config = store.load()
@@ -24,6 +31,10 @@ final class AppModel: ObservableObject {
         // Pick up changes made from the CLI (rungrinh off, snooze, ...) and snooze expiry.
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reload() }
+        }
+        Task { await checkForUpdate(manual: false) }
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.checkForUpdate(manual: false) }
         }
     }
 
@@ -117,5 +128,45 @@ final class AppModel: ObservableObject {
             status = "Login item: \(error.localizedDescription)"
         }
         launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    // MARK: - Updates
+
+    func checkForUpdate(manual: Bool) async {
+        guard let current = currentVersion else {
+            if manual { updateStatus = "Đang chạy ngoài app bundle, không kiểm tra được" }
+            return
+        }
+        guard !checkingUpdate, !installingUpdate else { return }
+        checkingUpdate = true
+        defer { checkingUpdate = false }
+        do {
+            update = try await updater.availableUpdate(current: current)
+            if let update {
+                updateStatus = "Có bản mới \(update.tag)"
+                if config.autoUpdate && !manual { installUpdate() }
+            } else if manual {
+                updateStatus = "Đang dùng bản mới nhất"
+            }
+        } catch {
+            if manual { updateStatus = "Lỗi kiểm tra: \(error.localizedDescription)" }
+        }
+    }
+
+    /// install.sh quits this app and relaunches the new one, so nothing after this needs to run.
+    func installUpdate() {
+        guard let update else { return }
+        do {
+            try updater.install(tag: update.tag, log: store.paths.log) { code in
+                Task { @MainActor [weak self] in
+                    self?.installingUpdate = false
+                    self?.updateStatus = "Cập nhật lỗi (exit \(code)), xem rungrinh.log"
+                }
+            }
+            installingUpdate = true
+            updateStatus = "Đang cập nhật lên \(update.tag)…"
+        } catch {
+            updateStatus = "Lỗi cập nhật: \(error.localizedDescription)"
+        }
     }
 }

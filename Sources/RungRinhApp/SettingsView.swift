@@ -8,6 +8,9 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if let update = model.update, !model.installingUpdate {
+                updateBanner(update)
+            }
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -17,11 +20,14 @@ struct SettingsView: View {
                     Divider()
                     claudeSection
                     Divider()
+                    updateSection
+                    Divider()
                     historySection
                 }
                 .padding(.trailing, 6)
             }
-            .frame(maxHeight: 520)
+            // Fixed height: a MenuBarExtra window sizes to the ScrollView's ideal height, which is ~0.
+            .frame(height: 520)
             Divider()
             footer
         }
@@ -159,6 +165,40 @@ struct SettingsView: View {
             }
             Toggle("Báo khi task xong (Stop)", isOn: model.binding(\.events.stop))
             Toggle("Báo khi Claude cần quyền / chờ input", isOn: model.binding(\.events.notification))
+        }
+    }
+
+    private func updateBanner(_ update: Release) -> some View {
+        HStack {
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(Color.accentColor)
+            Text("Có bản mới \(update.tag)").font(.callout)
+            Spacer()
+            Button("Cập nhật") { model.installUpdate() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+    }
+
+    private var updateSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Cập nhật").font(.subheadline.bold())
+            HStack {
+                Text("Phiên bản \(model.currentVersion?.description ?? "dev")")
+                Spacer()
+                if model.update != nil {
+                    Button(model.installingUpdate ? "Đang cập nhật…" : "Cập nhật lên \(model.update!.tag)") { model.installUpdate() }
+                        .disabled(model.installingUpdate)
+                } else {
+                    Button(model.checkingUpdate ? "Đang kiểm tra…" : "Kiểm tra") {
+                        Task { await model.checkForUpdate(manual: true) }
+                    }
+                    .disabled(model.checkingUpdate || model.currentVersion == nil)
+                }
+            }
+            if let status = model.updateStatus {
+                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            Toggle("Tự động cài bản mới", isOn: model.binding(\.autoUpdate))
         }
     }
 

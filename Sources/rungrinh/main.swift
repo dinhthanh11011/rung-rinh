@@ -15,12 +15,13 @@ Usage:
   rungrinh config show | path | set <key> <value>   e.g. config set bark.key XXXX
   rungrinh install-hooks | uninstall-hooks          Claude Code hooks in ~/.claude/settings.json
   rungrinh shell-init zsh|bash                      auto-push for long shell commands
+  rungrinh version | update                         show version / install the latest release
   rungrinh hook claude                              (called by Claude Code, reads JSON on stdin)
 
 Config keys: enabled, provider (bark|ntfy), bark.key, bark.server, bark.sound, bark.level,
   ntfy.server, ntfy.topic, ntfy.token, ntfy.priority, minTaskSeconds, cooldownSeconds,
   onlyWhenIdle, idleSeconds, quietHours.enabled, quietHours.start, quietHours.end (minutes),
-  events.stop, events.notification
+  events.stop, events.notification, autoUpdate
 """
 
 func fail(_ text: String, code: Int32 = 1) -> Never {
@@ -209,6 +210,21 @@ case "uninstall-hooks":
 case "shell-init":
     guard let script = ShellInit.script(for: tail.first ?? "zsh", binary: selfPath()) else { fail("supported shells: zsh, bash") }
     print(script)
+
+case "version", "--version":
+    print(Updater.currentVersion?.description ?? "dev")
+
+case "update":
+    let latest = try await Updater().latestRelease()
+    if let current = Updater.currentVersion, let v = latest.version, !(current < v) {
+        print("already up to date (\(current))")
+    } else {
+        print("installing \(latest.tag)…")
+        let p = Updater.installProcess(tag: latest.tag)
+        try p.run()
+        p.waitUntilExit()
+        exit(p.terminationStatus)
+    }
 
 case "help", "-h", "--help":
     print(usage)

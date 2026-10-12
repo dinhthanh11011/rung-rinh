@@ -20,14 +20,15 @@ done
 ARCH_FLAGS=()
 [[ $RELEASE == 1 ]] && ARCH_FLAGS=(--arch arm64 --arch x86_64)
 
-swift build -c release "${ARCH_FLAGS[@]}" --product rungrinh
-swift build -c release "${ARCH_FLAGS[@]}" --product RungRinhApp
-BIN="$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)"
+swift build -c release ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --product rungrinh
+swift build -c release ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --product RungRinhApp
+BIN="$(swift build -c release ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)"
 
 APP="build/RungRinh.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 if [[ -n "${VERSION:-}" ]]; then
   plutil -replace CFBundleShortVersionString -string "${VERSION#v}" "$APP/Contents/Info.plist"
 fi
