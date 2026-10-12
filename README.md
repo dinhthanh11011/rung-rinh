@@ -11,8 +11,8 @@ curl -fsSL https://raw.githubusercontent.com/dinhthanh11011/rung-rinh/main/insta
 Lệnh này tải bản release mới nhất (universal, chạy được trên cả Apple Silicon lẫn Intel), cài vào `~/Applications/RungRinh.app` và link CLI vào `~/.local/bin/rungrinh`. Muốn cập nhật thì chạy lại đúng lệnh đó.
 
 ```bash
-curl -fsSL .../install.sh | bash -s -- --hooks       # cài luôn hook Claude Code
-curl -fsSL .../install.sh | bash -s -- --uninstall   # gỡ app, CLI và hook (vẫn giữ config)
+curl -fsSL https://raw.githubusercontent.com/dinhthanh11011/rung-rinh/main/install.sh | bash -s -- --hooks       # cài luôn hook Claude Code
+curl -fsSL https://raw.githubusercontent.com/dinhthanh11011/rung-rinh/main/install.sh | bash -s -- --uninstall   # gỡ app, CLI và hook (vẫn giữ config)
 ```
 
 Nếu muốn build từ source: `scripts/build-app.sh` (chỉ cần Command Line Tools: `xcode-select --install`).
