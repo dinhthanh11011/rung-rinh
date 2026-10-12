@@ -43,7 +43,7 @@ Lần push nào bị bỏ qua cũng được ghi lý do vào phần "Gần đây
 - `UserPromptSubmit`: ghi lại thời điểm bắt đầu task.
 - `Stop`: tính thời lượng rồi push `✅ <project> xong sau 4m12s` kèm trích đoạn câu trả lời cuối.
 - `PreToolUse` (`AskUserQuestion`, `ExitPlanMode`) và `Notification` (xin quyền): Claude hỏi bạn. Hook **không push ngay** mà chạy một tiến trình nền. Nếu sau `askDelaySeconds` (60s) câu hỏi vẫn chưa được trả lời thì push `⏳ <project>: Claude chờ bạn 1m00s` kèm nội dung câu hỏi. Còn chưa trả lời thì nhắc lại **đúng 1 lần** sau `askReminderSeconds` (10 phút, đặt 0 để tắt).
-- `PostToolUse`, `PreToolUse` của tool khác, `SessionEnd`: bạn đã trả lời, đã từ chối hoặc đã thoát, nên huỷ push đang chờ.
+- Mỗi câu hỏi được theo dõi riêng theo session và `tool_use_id` của tool call đang chờ. `PostToolUse` của đúng tool call đó (bạn trả lời hoặc duyệt quyền) sẽ huỷ push. Các tool chạy song song bắt đầu hay xong đều không ảnh hưởng. Khi bạn từ chối thì không có hook nào chạy, nên trước khi push, tiến trình nền đọc transcript xem tool call đã có `tool_result` chưa. `UserPromptSubmit`, `Stop`, `SessionEnd` xoá mọi câu hỏi đang chờ của session đó.
 - `Notification` `idle_prompt`: Claude tự chờ khoảng 60s ở cuối lượt rồi mới báo, nên lúc này push `⏳ Claude cần bạn` luôn.
 
 Bản cũ chỉ cài 3 hook đầu. App sẽ tự cài thêm các hook còn thiếu khi mở; nếu dùng CLI thì chạy lại `rungrinh install-hooks`.

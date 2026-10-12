@@ -2,24 +2,34 @@ import Foundation
 
 /// Claude is blocked on the user: a question (AskUserQuestion / ExitPlanMode) or a permission prompt.
 public struct PendingQuestion: Codable, Equatable, Sendable {
-    /// Identifies this wait, so a waiter never pushes for a newer question it wasn't spawned for.
+    /// Identifies this wait, so a waiter only ever pushes for the question it was spawned for.
     public var token: String
     public var since: Date
     public var project: String
     /// The text shown to the user, e.g. the question or "Claude needs your permission to use Bash".
     public var text: String
-    /// Tool the prompt belongs to; when it finishes, the prompt was answered. nil = unknown.
     public var tool: String?
+    /// The tool calls the prompt blocks. Once each has a result the prompt was answered (or denied).
+    /// Empty when Claude Code didn't send ids; then only the tool's PostToolUse or the turn ending clears it.
+    public var toolUseIds: [String]
+    /// Lets the waiter see a denial, which fires no hook but writes a tool_result.
+    public var transcriptPath: String?
 
-    public init(token: String = UUID().uuidString, since: Date, project: String, text: String, tool: String?) {
+    public init(
+        token: String = UUID().uuidString, since: Date, project: String, text: String,
+        tool: String?, toolUseIds: [String] = [], transcriptPath: String? = nil
+    ) {
         self.token = token
         self.since = since
         self.project = project
         self.text = text
         self.tool = tool
+        self.toolUseIds = toolUseIds
+        self.transcriptPath = transcriptPath
     }
 }
 
+/// One file per wait, per session, so concurrent hook processes never overwrite each other.
 public struct PendingStore: Sendable {
     public let paths: Paths
 
@@ -27,23 +37,83 @@ public struct PendingStore: Sendable {
         self.paths = paths
     }
 
-    private func file(_ session: String) -> URL {
-        paths.pending.appendingPathComponent(StateStore.safeName(session))
+    private func dir(_ session: String) -> URL {
+        paths.waits.appendingPathComponent(StateStore.safeName(session))
     }
 
-    public func get(session: String) -> PendingQuestion? {
-        guard let data = try? Data(contentsOf: file(session)) else { return nil }
+    private func file(_ session: String, _ token: String) -> URL {
+        dir(session).appendingPathComponent(StateStore.safeName(token) + ".json")
+    }
+
+    public func all(session: String) -> [PendingQuestion] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir(session), includingPropertiesForKeys: nil)) ?? []
+        return files.compactMap { f in
+            (try? Data(contentsOf: f)).flatMap { try? JSONCoding.decoder.decode(PendingQuestion.self, from: $0) }
+        }
+    }
+
+    public func get(session: String, token: String) -> PendingQuestion? {
+        guard let data = try? Data(contentsOf: file(session, token)) else { return nil }
         return try? JSONCoding.decoder.decode(PendingQuestion.self, from: data)
     }
 
-    public func set(_ pending: PendingQuestion, session: String) {
-        try? paths.ensureDirs()
-        guard let data = try? JSONCoding.encoder.encode(pending) else { return }
-        try? data.write(to: file(session), options: .atomic)
+    public func add(_ q: PendingQuestion, session: String) {
+        try? FileManager.default.createDirectory(at: dir(session), withIntermediateDirectories: true)
+        guard let data = try? JSONCoding.encoder.encode(q) else { return }
+        try? data.write(to: file(session, q.token), options: .atomic)
+    }
+
+    public func remove(session: String, token: String) {
+        try? FileManager.default.removeItem(at: file(session, token))
+    }
+
+    /// A tool call finished: drop the waits it was blocking.
+    public func toolFinished(session: String, toolUseId: String?, tool: String?) {
+        for q in all(session: session) {
+            let done = q.toolUseIds.isEmpty ? q.tool == nil || q.tool == tool : toolUseId.map(q.toolUseIds.contains) ?? false
+            if done { remove(session: session, token: q.token) }
+        }
     }
 
     public func clear(session: String) {
-        try? FileManager.default.removeItem(at: file(session))
+        try? FileManager.default.removeItem(at: dir(session))
+    }
+}
+
+/// Tool calls in flight per session (PreToolUse without a PostToolUse yet), to tell which
+/// call a permission prompt belongs to; the Notification hook carries no tool_use_id.
+public struct ToolCallStore: Sendable {
+    public let paths: Paths
+
+    public init(paths: Paths = Paths()) {
+        self.paths = paths
+    }
+
+    private func dir(_ session: String) -> URL {
+        paths.calls.appendingPathComponent(StateStore.safeName(session))
+    }
+
+    public func started(session: String, id: String, tool: String) {
+        try? FileManager.default.createDirectory(at: dir(session), withIntermediateDirectories: true)
+        try? tool.write(to: dir(session).appendingPathComponent(StateStore.safeName(id)), atomically: true, encoding: .utf8)
+    }
+
+    public func finished(session: String, id: String) {
+        try? FileManager.default.removeItem(at: dir(session).appendingPathComponent(StateStore.safeName(id)))
+    }
+
+    /// id -> tool name.
+    public func inFlight(session: String) -> [String: String] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir(session), includingPropertiesForKeys: nil)) ?? []
+        var out: [String: String] = [:]
+        for f in files {
+            out[f.lastPathComponent] = (try? String(contentsOf: f, encoding: .utf8)) ?? ""
+        }
+        return out
+    }
+
+    public func clear(session: String) {
+        try? FileManager.default.removeItem(at: dir(session))
     }
 }
 
@@ -77,10 +147,16 @@ public struct QuestionWaiter: Sendable {
         if config.askReminderSeconds > 0 { offsets.append(first + TimeInterval(config.askReminderSeconds)) }
 
         for offset in offsets {
-            guard let since = store.get(session: session)?.since else { return }
+            guard let since = store.get(session: session, token: token)?.since else { return }
             await sleep(since.addingTimeInterval(offset).timeIntervalSince(now()))
-            // Answered, superseded by a newer question, or Claude moved on.
-            guard let pending = store.get(session: session), pending.token == token else { return }
+            // Gone = answered, or Claude's turn / session ended.
+            guard let pending = store.get(session: session, token: token) else { return }
+            if !pending.toolUseIds.isEmpty, let path = pending.transcriptPath,
+               Transcript.resolvedToolUseIds(path: path, among: Set(pending.toolUseIds)).count == Set(pending.toolUseIds).count {
+                // Denied (no hook fires for that) or answered before PostToolUse ran.
+                store.remove(session: session, token: token)
+                return
+            }
             let waited = formatDuration(now().timeIntervalSince(pending.since))
             await dispatcher.dispatch(
                 .claudeNotification,

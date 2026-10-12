@@ -15,6 +15,7 @@ public struct ClaudeHookInput: Decodable, Sendable {
     /// PreToolUse / PostToolUse.
     public var toolName: String?
     public var toolInput: ToolInput?
+    public var toolUseId: String?
 
     /// The parts of AskUserQuestion / ExitPlanMode input we show in a push.
     public struct ToolInput: Decodable, Sendable {
@@ -36,6 +37,7 @@ public struct ClaudeHookInput: Decodable, Sendable {
         case lastAssistantMessage = "last_assistant_message"
         case toolName = "tool_name"
         case toolInput = "tool_input"
+        case toolUseId = "tool_use_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -51,6 +53,7 @@ public struct ClaudeHookInput: Decodable, Sendable {
         toolName = try? c.decodeIfPresent(String.self, forKey: .toolName)
         // Other tools' input has arbitrary shapes; never let it fail the whole decode.
         toolInput = try? c.decodeIfPresent(ToolInput.self, forKey: .toolInput)
+        toolUseId = try? c.decodeIfPresent(String.self, forKey: .toolUseId)
     }
 }
 
@@ -84,23 +87,31 @@ public struct ClaudeHookHandler: Sendable {
         }
         let state = StateStore(paths: paths)
         let pending = PendingStore(paths: paths)
+        let calls = ToolCallStore(paths: paths)
         let session = input.sessionId ?? "default"
         let project = input.cwd.map { ($0 as NSString).lastPathComponent } ?? "Claude Code"
 
         /// Records that Claude is blocked on the user and lets a detached process push later if it still is.
-        func startWaiting(text: String, tool: String?) {
-            let q = PendingQuestion(since: now, project: project, text: text, tool: tool)
-            pending.set(q, session: session)
+        func startWaiting(text: String, tool: String?, toolUseIds: [String]) {
+            let q = PendingQuestion(since: now, project: project, text: text, tool: tool,
+                                    toolUseIds: toolUseIds, transcriptPath: input.transcriptPath)
+            pending.add(q, session: session)
             spawnWaiter(session, q.token)
+        }
+
+        /// The turn is over (or never started), so nothing in it is still waiting.
+        func endTurn() {
+            pending.clear(session: session)
+            calls.clear(session: session)
         }
 
         switch input.hookEventName {
         case "UserPromptSubmit":
-            pending.clear(session: session)
+            endTurn()
             state.markStart(session: session, at: now)
 
         case "Stop":
-            pending.clear(session: session)
+            endTurn()
             if input.stopHookActive == true { return }
             let duration = state.start(session: session).map { now.timeIntervalSince($0) }
             state.clear(session: session)
@@ -114,42 +125,44 @@ public struct ClaudeHookHandler: Sendable {
             )
 
         case "SessionEnd":
-            pending.clear(session: session)
+            endTurn()
 
         case "PreToolUse":
             let tool = input.toolName ?? ""
+            if let id = input.toolUseId { calls.started(session: session, id: id, tool: tool) }
             if Self.askingTools.contains(tool) {
                 let text = input.toolInput?.questions?.compactMap(\.question).first
                     ?? input.toolInput?.plan.map { "Duyệt plan: \($0)" }
                     ?? "Claude đang hỏi bạn"
-                startWaiting(text: text, tool: tool)
-            } else if pending.get(session: session) != nil {
-                // Claude is running another tool, so whatever it asked was answered or denied.
-                pending.clear(session: session)
+                startWaiting(text: text, tool: tool, toolUseIds: input.toolUseId.map { [$0] } ?? [])
             }
 
         case "PostToolUse", "PostToolUseFailure":
-            // Parallel tool calls can finish while a prompt is open, so only the prompt's own tool clears it.
-            if let q = pending.get(session: session), q.tool == nil || q.tool == input.toolName {
-                pending.clear(session: session)
-            }
+            if let id = input.toolUseId { calls.finished(session: session, id: id) }
+            // Only the prompt's own call answers it; parallel calls finishing don't.
+            pending.toolFinished(session: session, toolUseId: input.toolUseId, tool: input.toolName)
 
         case "Notification":
             switch input.notificationType {
-            case "auth_success":
-                return
+            case "permission_prompt", "elicitation_dialog", "elicitation_url_dialog", nil:
+                let text = input.message ?? "Claude đang chờ bạn"
+                let tool = Self.permissionTool(in: text)
+                // The call(s) this prompt is for: in flight, of that tool, not already waited on.
+                let waited = Set(pending.all(session: session).flatMap(\.toolUseIds))
+                let inFlight = calls.inFlight(session: session).filter { !waited.contains($0.key) }
+                let ids = inFlight.filter { tool == nil || $0.value == tool }.map(\.key).sorted()
+                if ids.isEmpty, !pending.all(session: session).isEmpty { return } // already covered
+                startWaiting(text: text, tool: tool, toolUseIds: ids)
             case "idle_prompt":
                 // Claude has already waited ~60s by itself; a question in flight has its own waiter.
-                if pending.get(session: session) != nil { return }
+                if !pending.all(session: session).isEmpty { return }
                 await dispatcher.dispatch(
                     .claudeNotification,
                     Message(title: "⏳ \(project): Claude cần bạn", body: Transcript.excerpt(input.message ?? "Claude đang chờ bạn"), priority: .high, tags: ["hourglass"])
                 )
             default:
-                // Permission prompt (or an older Claude Code without notification_type).
-                if pending.get(session: session) != nil { return }
-                let text = input.message ?? "Claude đang chờ bạn"
-                startWaiting(text: text, tool: Self.permissionTool(in: text))
+                // auth_success, agent_completed, quota notices…: not a question.
+                return
             }
 
         default:
@@ -188,6 +201,27 @@ public enum Transcript {
             }
         }
         return nil
+    }
+
+    /// Which of `ids` already have a tool_result in the transcript (approved and run, or denied).
+    public static func resolvedToolUseIds(path: String, among ids: Set<String>, tailBytes: Int = 1024 * 1024) -> Set<String> {
+        guard !ids.isEmpty else { return [] }
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > UInt64(tailBytes) ? size - UInt64(tailBytes) : 0)
+        guard let data = try? handle.readToEnd() else { return [] }
+
+        var found = Set<String>()
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") where line.contains("tool_result") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let blocks = (obj["message"] as? [String: Any])?["content"] as? [[String: Any]] else { continue }
+            for b in blocks where b["type"] as? String == "tool_result" {
+                if let id = b["tool_use_id"] as? String, ids.contains(id) { found.insert(id) }
+            }
+        }
+        return found
     }
 
     /// Collapses whitespace / markdown noise and truncates for a watch-sized notification.

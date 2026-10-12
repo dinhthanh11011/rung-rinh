@@ -232,7 +232,8 @@ struct QuestionWaitTests {
         init(_ now: Date) { self.now = now }
     }
 
-    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    // Real time: UserPromptSubmit prunes state files older than a week relative to `now`.
+    let t0 = Date()
 
     func setup() throws -> (Paths, HookHandlerTests.Recorder, Spawned, ClaudeHookHandler) {
         let paths = Paths(base: FileManager.default.temporaryDirectory.appendingPathComponent("rungrinh-\(UUID().uuidString)"))
@@ -259,8 +260,12 @@ struct QuestionWaitTests {
         )
     }
 
-    func ask(_ handler: ClaudeHookHandler, at t: Date) async {
-        await handler.handle(Data(#"{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p/app","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Dùng Postgres hay SQLite?","options":[]}]}}"#.utf8), now: t)
+    func ask(_ handler: ClaudeHookHandler, at t: Date, id: String = "q1", session: String = "s1") async {
+        await handler.handle(Data(#"{"hook_event_name":"PreToolUse","session_id":"\#(session)","cwd":"/p/app","tool_name":"AskUserQuestion","tool_use_id":"\#(id)","tool_input":{"questions":[{"question":"Dùng Postgres hay SQLite?","options":[]}]}}"#.utf8), now: t)
+    }
+
+    func hook(_ handler: ClaudeHookHandler, _ json: String, at t: Date? = nil) async {
+        await handler.handle(Data(json.utf8), now: t ?? t0)
     }
 
     func testAnsweredQuestionNeverPushes() async throws {
@@ -268,7 +273,7 @@ struct QuestionWaitTests {
         await ask(handler, at: t0)
         check(rec.messages.isEmpty, "no push right away")
         check(spawned.calls.count == 1)
-        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion"}"#.utf8), now: t0.addingTimeInterval(20))
+        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion","tool_use_id":"q1"}"#.utf8), now: t0.addingTimeInterval(20))
         await waiter(paths, rec, clock: Clock(t0)).run(session: "s1", token: spawned.calls[0].1)
         check(rec.messages.isEmpty)
     }
@@ -290,26 +295,57 @@ struct QuestionWaitTests {
         let (paths, rec, spawned, handler) = try setup()
         try ConfigStore(paths: paths).update { $0.askReminderSeconds = 0 }
         await ask(handler, at: t0)
-        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion"}"#.utf8), now: t0.addingTimeInterval(5))
-        await ask(handler, at: t0.addingTimeInterval(10))
+        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion","tool_use_id":"q1"}"#.utf8), now: t0.addingTimeInterval(5))
+        await ask(handler, at: t0.addingTimeInterval(10), id: "q2")
         await waiter(paths, rec, clock: Clock(t0)).run(session: "s1", token: spawned.calls[0].1)
         check(rec.messages.isEmpty, "old waiter stays quiet")
         await waiter(paths, rec, clock: Clock(t0.addingTimeInterval(10))).run(session: "s1", token: spawned.calls[1].1)
         check(rec.messages.count == 1)
     }
 
-    func testPermissionPromptClearedByOwnToolOrNextTool() async throws {
+    func testParallelToolsDontAnswerPermissionPrompt() async throws {
         let (paths, _, spawned, handler) = try setup()
         let store = PendingStore(paths: paths)
-        await handler.handle(Data(#"{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s1","message":"Claude needs your permission to use Bash"}"#.utf8), now: t0)
+        await hook(handler, #"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Read","tool_use_id":"r1","tool_input":{}}"#)
+        await hook(handler, #"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_use_id":"b1","tool_input":{}}"#)
+        await hook(handler, #"{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s1","message":"Claude needs your permission to use Bash"}"#)
         check(spawned.calls.count == 1)
-        check(store.get(session: "s1")?.tool == "Bash")
-        // A parallel Read finishing doesn't answer the Bash prompt.
-        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Read"}"#.utf8), now: t0)
-        check(store.get(session: "s1") != nil)
-        // Denied, and Claude moved on to another tool.
-        await handler.handle(Data(#"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Grep","tool_input":{"pattern":"x"}}"#.utf8), now: t0)
-        check(store.get(session: "s1") == nil)
+        check(store.all(session: "s1").first?.toolUseIds == ["b1"])
+        // Parallel calls starting or finishing don't answer the Bash prompt.
+        await hook(handler, #"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Read","tool_use_id":"r1"}"#)
+        await hook(handler, #"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Grep","tool_use_id":"g1","tool_input":{}}"#)
+        check(store.all(session: "s1").count == 1)
+        // Approved: the Bash call itself finishes.
+        await hook(handler, #"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Bash","tool_use_id":"b1"}"#)
+        check(store.all(session: "s1").isEmpty)
+    }
+
+    func testDeniedPromptFoundInTranscript() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        let transcript = paths.base.appendingPathComponent("t.jsonl")
+        try Data(#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash"}]}}"#.utf8).write(to: transcript)
+        await hook(handler, #"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Bash","tool_use_id":"b1","tool_input":{}}"#)
+        await hook(handler, #"{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s1","transcript_path":"\#(transcript.path)","message":"Claude needs your permission to use Bash"}"#)
+        // Denying fires no hook, but Claude Code writes an error tool_result.
+        let denied = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","is_error":true,"content":"The user doesn't want to proceed"}]}}"#
+        let h = try FileHandle(forWritingTo: transcript)
+        h.seekToEndOfFile(); h.write(Data(("\n" + denied).utf8)); try h.close()
+        await waiter(paths, rec, clock: Clock(t0)).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.isEmpty)
+        check(PendingStore(paths: paths).all(session: "s1").isEmpty)
+    }
+
+    func testSessionsAreIndependent() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        try ConfigStore(paths: paths).update { $0.askReminderSeconds = 0; $0.cooldownSeconds = 0 }
+        await ask(handler, at: t0, id: "a", session: "s1")
+        await ask(handler, at: t0, id: "b", session: "s2")
+        // s1 answers and starts a new prompt; s2 is still waiting.
+        await hook(handler, #"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion","tool_use_id":"a"}"#)
+        await hook(handler, #"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#)
+        await waiter(paths, rec, clock: Clock(t0)).run(session: "s1", token: spawned.calls[0].1)
+        await waiter(paths, rec, clock: Clock(t0)).run(session: "s2", token: spawned.calls[1].1)
+        check(rec.messages.count == 1, "only s2 pushes, got \(rec.messages.count)")
     }
 
     func testIdlePromptDefersToPendingQuestion() async throws {
@@ -395,7 +431,9 @@ print("QuestionWaitTests")
 await run("testAnsweredQuestionNeverPushes") { try await QuestionWaitTests().testAnsweredQuestionNeverPushes() }
 await run("testUnansweredPushesThenRemindsOnce") { try await QuestionWaitTests().testUnansweredPushesThenRemindsOnce() }
 await run("testNewerQuestionSupersedesOldWaiter") { try await QuestionWaitTests().testNewerQuestionSupersedesOldWaiter() }
-await run("testPermissionPromptClearedByOwnToolOrNextTool") { try await QuestionWaitTests().testPermissionPromptClearedByOwnToolOrNextTool() }
+await run("testParallelToolsDontAnswerPermissionPrompt") { try await QuestionWaitTests().testParallelToolsDontAnswerPermissionPrompt() }
+await run("testDeniedPromptFoundInTranscript") { try await QuestionWaitTests().testDeniedPromptFoundInTranscript() }
+await run("testSessionsAreIndependent") { try await QuestionWaitTests().testSessionsAreIndependent() }
 await run("testIdlePromptDefersToPendingQuestion") { try await QuestionWaitTests().testIdlePromptDefersToPendingQuestion() }
 await run("testOldInstallNeedsUpgrade") { try QuestionWaitTests().testOldInstallNeedsUpgrade() }
 print("UpdaterTests")
