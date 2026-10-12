@@ -44,8 +44,15 @@ public struct Updater: Sendable {
     public init() {}
 
     /// Version of the running app bundle, or nil when running outside one (swift run).
+    /// Resolves symlinks first: the CLI runs as ~/.local/bin/rungrinh → RungRinh.app/Contents/MacOS/rungrinh,
+    /// and Bundle.main alone would look for an Info.plist next to the symlink.
     public static var currentVersion: Version? {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String).flatMap(Version.init)
+        guard let exe = Bundle.main.executablePath else { return nil }
+        let plist = URL(fileURLWithPath: exe).resolvingSymlinksInPath()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Info.plist")
+        guard let info = NSDictionary(contentsOf: plist),
+              let text = info["CFBundleShortVersionString"] as? String else { return nil }
+        return Version(text)
     }
 
     public func latestRelease() async throws -> Release {
