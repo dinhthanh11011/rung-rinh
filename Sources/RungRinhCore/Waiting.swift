@@ -1,12 +1,19 @@
 import Foundation
 
 /// Claude is blocked on the user: a question (AskUserQuestion / ExitPlanMode) or a permission prompt.
+/// Or Claude finished and the "done" push waits to see whether the user is already on it.
 public struct PendingQuestion: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        case question, done
+    }
+
     /// Identifies this wait, so a waiter only ever pushes for the question it was spawned for.
     public var token: String
+    public var kind: Kind
     public var since: Date
     public var project: String
     /// The text shown to the user, e.g. the question or "Claude needs your permission to use Bash".
+    /// For `.done`, the end of Claude's answer.
     public var text: String
     public var tool: String?
     /// The tool calls the prompt blocks. Once each has a result the prompt was answered (or denied).
@@ -14,18 +21,40 @@ public struct PendingQuestion: Codable, Equatable, Sendable {
     public var toolUseIds: [String]
     /// Lets the waiter see a denial, which fires no hook but writes a tool_result.
     public var transcriptPath: String?
+    /// `.done`: how long the task took.
+    public var duration: TimeInterval?
+    /// The hook process and its ancestors, one of which is the app Claude runs in (see HostApp).
+    public var hostPids: [Int32]
 
     public init(
-        token: String = UUID().uuidString, since: Date, project: String, text: String,
-        tool: String?, toolUseIds: [String] = [], transcriptPath: String? = nil
+        token: String = UUID().uuidString, kind: Kind = .question, since: Date, project: String, text: String,
+        tool: String? = nil, toolUseIds: [String] = [], transcriptPath: String? = nil,
+        duration: TimeInterval? = nil, hostPids: [Int32] = []
     ) {
         self.token = token
+        self.kind = kind
         self.since = since
         self.project = project
         self.text = text
         self.tool = tool
         self.toolUseIds = toolUseIds
         self.transcriptPath = transcriptPath
+        self.duration = duration
+        self.hostPids = hostPids
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        token = try c.decode(String.self, forKey: .token)
+        kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .question
+        since = try c.decode(Date.self, forKey: .since)
+        project = try c.decode(String.self, forKey: .project)
+        text = try c.decode(String.self, forKey: .text)
+        tool = try c.decodeIfPresent(String.self, forKey: .tool)
+        toolUseIds = try c.decodeIfPresent([String].self, forKey: .toolUseIds) ?? []
+        transcriptPath = try c.decodeIfPresent(String.self, forKey: .transcriptPath)
+        duration = try c.decodeIfPresent(TimeInterval.self, forKey: .duration)
+        hostPids = try c.decodeIfPresent([Int32].self, forKey: .hostPids) ?? []
     }
 }
 
@@ -124,10 +153,12 @@ public struct QuestionWaiter: Sendable {
     public let dispatcher: Dispatcher
     public let now: @Sendable () -> Date
     public let sleep: @Sendable (TimeInterval) async -> Void
+    public let presence: Presence
 
     public init(
         paths: Paths = Paths(),
         dispatcher: Dispatcher? = nil,
+        presence: Presence = Presence(),
         now: @escaping @Sendable () -> Date = { Date() },
         sleep: @escaping @Sendable (TimeInterval) async -> Void = { secs in
             try? await Task.sleep(nanoseconds: UInt64(max(0, secs) * 1_000_000_000))
@@ -135,6 +166,7 @@ public struct QuestionWaiter: Sendable {
     ) {
         self.paths = paths
         self.dispatcher = dispatcher ?? Dispatcher(paths: paths)
+        self.presence = presence
         self.now = now
         self.sleep = sleep
     }
@@ -142,6 +174,10 @@ public struct QuestionWaiter: Sendable {
     public func run(session: String, token: String) async {
         let store = PendingStore(paths: paths)
         let config = ConfigStore(paths: paths).load()
+        if store.get(session: session, token: token)?.kind == .done {
+            await runDone(session: session, token: token, delay: TimeInterval(max(0, config.doneDelaySeconds)))
+            return
+        }
         let first = TimeInterval(max(0, config.askDelaySeconds))
         var offsets = [first]
         if config.askReminderSeconds > 0 { offsets.append(first + TimeInterval(config.askReminderSeconds)) }
@@ -168,6 +204,26 @@ public struct QuestionWaiter: Sendable {
                 )
             )
         }
+    }
+
+    /// Claude finished: push unless the user moved on by themselves within `delay`.
+    /// The record stays until the next prompt so an idle_prompt doesn't push the same thing again.
+    func runDone(session: String, token: String, delay: TimeInterval) async {
+        let store = PendingStore(paths: paths)
+        guard let since = store.get(session: session, token: token)?.since else { return }
+        await sleep(since.addingTimeInterval(delay).timeIntervalSince(now()))
+        // Gone = the user sent another prompt (or closed the session).
+        guard let done = store.get(session: session, token: token) else { return }
+        let title = done.duration.map { "✅ \(done.project) xong sau \(formatDuration($0))" } ?? "✅ \(done.project) xong"
+        // Typed or clicked in Claude's window since it finished: they've seen it.
+        if presence.isActive(in: done.hostPids, within: now().timeIntervalSince(done.since)) {
+            History(paths: paths).append(HistoryEntry(source: Event.claudeStop(duration: nil).source, title: title, sent: false, detail: "user in Claude's window"))
+            return
+        }
+        await dispatcher.dispatch(
+            .claudeStop(duration: done.duration),
+            Message(title: title, body: Transcript.excerpt(done.text), tags: ["white_check_mark"])
+        )
     }
 }
 

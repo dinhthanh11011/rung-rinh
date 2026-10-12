@@ -145,6 +145,16 @@ struct ClaudeTab: View {
                 Toggle("Claude cần cấp quyền hoặc chờ trả lời", isOn: model.binding(\.events.notification))
             }
 
+            if model.config.events.stop {
+                Section {
+                    SecondsStepper(title: "Chờ trước khi báo xong", value: model.binding(\.doneDelaySeconds), range: 0...600, step: 15)
+                } header: {
+                    Text("Claude làm xong")
+                } footer: {
+                    FormFooter("Trong lúc chờ, nếu bạn gõ prompt mới hoặc đang dùng đúng app chạy Claude (terminal / VS Code) thì không push. Đặt 0 để báo ngay.")
+                }
+            }
+
             if model.config.events.notification {
                 Section {
                     SecondsStepper(title: "Báo khi chưa trả lời sau", value: model.binding(\.askDelaySeconds), range: 0...1800, step: 15)

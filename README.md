@@ -29,6 +29,7 @@ Nếu muốn build từ source: `scripts/build-app.sh` (chỉ cần Command Line
 | Luật | Mặc định |
 |---|---|
 | Chỉ báo khi task chạy ≥ N giây | 120s |
+| Task xong: chờ N giây, bỏ push nếu bạn đã prompt tiếp hoặc đang dùng app chạy Claude | 60s |
 | Hai lần push cách nhau tối thiểu | 30s |
 | Chỉ báo khi bạn rời máy (không chạm phím/chuột ≥ N giây) | tắt |
 | Claude hỏi / xin quyền: chỉ báo khi chưa trả lời sau N giây, nhắc lại 1 lần | 5 phút, +10 phút |
@@ -41,10 +42,10 @@ Lần push nào bị bỏ qua cũng được ghi lý do vào phần "Gần đây
 
 `rungrinh hook claude` được gọi ở các event:
 - `UserPromptSubmit`: ghi lại thời điểm bắt đầu task.
-- `Stop`: tính thời lượng rồi push `✅ <project> xong sau 4m12s` kèm trích đoạn câu trả lời cuối.
+- `Stop`: tính thời lượng. Task đủ dài thì **không push ngay** mà chạy tiến trình nền chờ `doneDelaySeconds` (60s). Hết giờ chờ mà bạn chưa gõ prompt mới và cũng không đang dùng app chạy Claude thì mới push `✅ <project> xong sau 4m12s` kèm trích đoạn câu trả lời cuối. "Đang dùng" nghĩa là app đó (Terminal, iTerm, VS Code…, tìm qua chuỗi tiến trình cha của hook) đang ở trước nhất và bạn có gõ phím / chạm chuột sau khi Claude xong. Mức nhận biết là theo app, không theo từng cửa sổ: hai cửa sổ VS Code được coi như một. Chạy trong tmux thì không tìm được app nên chỉ dựa vào prompt mới.
 - `PreToolUse` (`AskUserQuestion`, `ExitPlanMode`) và `Notification` (xin quyền): Claude hỏi bạn. Hook **không push ngay** mà chạy một tiến trình nền. Nếu sau `askDelaySeconds` (5 phút) câu hỏi vẫn chưa được trả lời thì push `⏳ <project>: Claude chờ bạn 5m00s` kèm nội dung câu hỏi. Còn chưa trả lời thì nhắc lại **đúng 1 lần** sau `askReminderSeconds` (10 phút, đặt 0 để tắt).
 - Mỗi câu hỏi được theo dõi riêng theo session và `tool_use_id` của tool call đang chờ. `PostToolUse` của đúng tool call đó (bạn trả lời hoặc duyệt quyền) sẽ huỷ push. Các tool chạy song song bắt đầu hay xong đều không ảnh hưởng. Khi bạn từ chối thì không có hook nào chạy, nên trước khi push, tiến trình nền đọc transcript xem tool call đã có `tool_result` chưa. `UserPromptSubmit`, `Stop`, `SessionEnd` xoá mọi câu hỏi đang chờ của session đó.
-- `Notification` `idle_prompt`: Claude tự chờ khoảng 60s ở cuối lượt rồi mới báo, nên lúc này push `⏳ Claude cần bạn` luôn.
+- `Notification` `idle_prompt`: Claude tự chờ khoảng 60s ở cuối lượt rồi mới báo, nên lúc này push `⏳ Claude cần bạn` luôn, trừ khi task vừa xong đã có push riêng hoặc bạn đang dùng app chạy Claude.
 
 Bản cũ chỉ cài 3 hook đầu. App sẽ tự cài thêm các hook còn thiếu khi mở; nếu dùng CLI thì chạy lại `rungrinh install-hooks`.
 

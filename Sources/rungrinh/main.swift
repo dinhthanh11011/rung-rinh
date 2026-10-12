@@ -21,7 +21,7 @@ Usage:
 Config keys: enabled, provider (bark|ntfy), bark.key, bark.server, bark.sound, bark.level,
   ntfy.server, ntfy.topic, ntfy.token, ntfy.priority, minTaskSeconds, cooldownSeconds,
   onlyWhenIdle, idleSeconds, quietHours.enabled, quietHours.start, quietHours.end (minutes),
-  events.stop, events.notification, askDelaySeconds, askReminderSeconds (0 = no reminder), autoUpdate
+  events.stop, events.notification, doneDelaySeconds, askDelaySeconds, askReminderSeconds (0 = no reminder), autoUpdate
 """
 
 func fail(_ text: String, code: Int32 = 1) -> Never {
@@ -173,6 +173,7 @@ case "status":
     lines += [
         "min task:     \(c.minTaskSeconds)s   cooldown: \(c.cooldownSeconds)s",
         "only idle:    \(c.onlyWhenIdle ? "yes (≥ \(c.idleSeconds)s)" : "no")   idle now: \(Int(IdleTime.seconds()))s",
+        "done delay:   " + (c.doneDelaySeconds > 0 ? "push \(c.doneDelaySeconds)s after a task ends unless you're back on it" : "push right away"),
         "ask delay:    push after \(c.askDelaySeconds)s unanswered" + (c.askReminderSeconds > 0 ? ", remind once after +\(c.askReminderSeconds)s" : ""),
         "quiet hours:  " + (c.quietHours.enabled ? String(format: "%02d:%02d–%02d:%02d", c.quietHours.start / 60, c.quietHours.start % 60, c.quietHours.end / 60, c.quietHours.end % 60) : "off"),
         "claude hooks: \(ClaudeHookInstaller().isInstalled() ? "installed" : "not installed")",

@@ -65,14 +65,21 @@ public struct ClaudeHookHandler: Sendable {
     public let dispatcher: Dispatcher
     /// Starts the background waiter for (session, token). Tests replace it.
     public let spawnWaiter: @Sendable (String, String) -> Void
+    /// This process and its ancestors; the app Claude runs in is one of them.
+    public let hostPids: @Sendable () -> [Int32]
+    public let presence: Presence
 
     public init(
         paths: Paths = Paths(),
         dispatcher: Dispatcher? = nil,
+        hostPids: @escaping @Sendable () -> [Int32] = { HostApp.ancestorPids() },
+        presence: Presence = Presence(),
         spawnWaiter: (@Sendable (String, String) -> Void)? = nil
     ) {
         self.paths = paths
         self.dispatcher = dispatcher ?? Dispatcher(paths: paths)
+        self.hostPids = hostPids
+        self.presence = presence
         self.spawnWaiter = spawnWaiter ?? { session, token in
             if !Detached.spawn(Detached.selfPath, ["hook", "wait", session, token]) {
                 Log(paths: paths).write("[hook] could not start waiter")
@@ -118,6 +125,16 @@ public struct ClaudeHookHandler: Sendable {
             let summary = input.lastAssistantMessage
                 ?? input.transcriptPath.flatMap { Transcript.lastAssistantText(path: $0) }
                 ?? "Task đã xong"
+            let config = ConfigStore(paths: paths).load()
+            if config.doneDelaySeconds > 0, config.events.stop,
+               let duration, Int(duration.rounded()) >= config.minTaskSeconds {
+                // Worth a push, but only if the user doesn't come back to it by themselves first.
+                let done = PendingQuestion(kind: .done, since: now, project: project, text: summary,
+                                           duration: duration, hostPids: hostPids())
+                pending.add(done, session: session)
+                spawnWaiter(session, done.token)
+                return
+            }
             let title = duration.map { "✅ \(project) xong sau \(formatDuration($0))" } ?? "✅ \(project) xong"
             await dispatcher.dispatch(
                 .claudeStop(duration: duration),
@@ -154,8 +171,13 @@ public struct ClaudeHookHandler: Sendable {
                 if ids.isEmpty, !pending.all(session: session).isEmpty { return } // already covered
                 startWaiting(text: text, tool: tool, toolUseIds: ids)
             case "idle_prompt":
-                // Claude has already waited ~60s by itself; a question in flight has its own waiter.
+                // Claude has already waited ~60s by itself; a question in flight or a finished
+                // task has its own waiter.
                 if !pending.all(session: session).isEmpty { return }
+                if presence.isActive(in: hostPids(), within: 60) {
+                    History(paths: paths).append(HistoryEntry(source: Event.claudeNotification.source, title: "⏳ \(project): Claude cần bạn", sent: false, detail: "user in Claude's window"))
+                    return
+                }
                 await dispatcher.dispatch(
                     .claudeNotification,
                     Message(title: "⏳ \(project): Claude cần bạn", body: Transcript.excerpt(input.message ?? "Claude đang chờ bạn"), priority: .high, tags: ["hourglass"])

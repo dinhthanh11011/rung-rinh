@@ -189,6 +189,7 @@ struct HookHandlerTests {
         let paths = Paths(base: FileManager.default.temporaryDirectory.appendingPathComponent("rungrinh-\(UUID().uuidString)"))
         var c = Config()
         c.bark.key = "k"
+        c.doneDelaySeconds = 0
         try ConfigStore(paths: paths).save(c)
 
         let rec = Recorder()
@@ -235,7 +236,12 @@ struct QuestionWaitTests {
     // Real time: UserPromptSubmit prunes state files older than a week relative to `now`.
     let t0 = Date()
 
-    func setup() throws -> (Paths, HookHandlerTests.Recorder, Spawned, ClaudeHookHandler) {
+    final class Screen: @unchecked Sendable {
+        var front: Int32? = 1
+        var idle: TimeInterval = 999
+    }
+
+    func setup(screen: Screen = Screen()) throws -> (Paths, HookHandlerTests.Recorder, Spawned, ClaudeHookHandler) {
         let paths = Paths(base: FileManager.default.temporaryDirectory.appendingPathComponent("rungrinh-\(UUID().uuidString)"))
         var c = Config()
         c.bark.key = "k"
@@ -245,16 +251,19 @@ struct QuestionWaitTests {
         let handler = ClaudeHookHandler(
             paths: paths,
             dispatcher: Dispatcher(paths: paths, idleSeconds: { 999 }, makeNotifier: { _ in rec }),
+            hostPids: { [100, 42] }, // hook process, then the terminal app
+            presence: Presence(frontmostPid: { screen.front }, idleSeconds: { screen.idle }),
             spawnWaiter: { spawned.calls.append(($0, $1)) }
         )
         return (paths, rec, spawned, handler)
     }
 
     /// Runs the waiter with a fake clock where each sleep jumps time forward.
-    func waiter(_ paths: Paths, _ rec: HookHandlerTests.Recorder, clock: Clock) -> QuestionWaiter {
+    func waiter(_ paths: Paths, _ rec: HookHandlerTests.Recorder, clock: Clock, screen: Screen = Screen()) -> QuestionWaiter {
         QuestionWaiter(
             paths: paths,
             dispatcher: Dispatcher(paths: paths, idleSeconds: { 999 }, makeNotifier: { _ in rec }),
+            presence: Presence(frontmostPid: { screen.front }, idleSeconds: { screen.idle }),
             now: { clock.now },
             sleep: { clock.now = clock.now.addingTimeInterval(max(0, $0)) }
         )
@@ -355,6 +364,76 @@ struct QuestionWaitTests {
         check(rec.messages.isEmpty)
     }
 
+    func finish(_ handler: ClaudeHookHandler, after secs: TimeInterval) async {
+        await hook(handler, #"{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p/app"}"#, at: t0)
+        await hook(handler, #"{"hook_event_name":"Stop","session_id":"s1","cwd":"/p/app","last_assistant_message":"Xong rồi"}"#, at: t0.addingTimeInterval(secs))
+    }
+
+    func testDonePushesAfterDelayWhenUserAway() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        await finish(handler, after: 300)
+        check(rec.messages.isEmpty, "no push right away")
+        check(spawned.calls.count == 1)
+        await waiter(paths, rec, clock: Clock(t0.addingTimeInterval(300))).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.map(\.title) == ["✅ app xong sau 5m00s"], "\(rec.messages.map(\.title))")
+        check(rec.messages.first?.body == "Xong rồi")
+        // The finished task already said Claude is waiting.
+        await hook(handler, #"{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s1"}"#, at: t0.addingTimeInterval(370))
+        check(rec.messages.count == 1)
+    }
+
+    func testDoneSkippedWhenUserPromptsAgain() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        await finish(handler, after: 300)
+        await hook(handler, #"{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p/app"}"#, at: t0.addingTimeInterval(320))
+        await waiter(paths, rec, clock: Clock(t0.addingTimeInterval(300))).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.isEmpty)
+    }
+
+    func testDoneSkippedWhenUserInClaudesWindow() async throws {
+        let screen = Screen()
+        let (paths, rec, spawned, handler) = try setup(screen: screen)
+        await finish(handler, after: 300)
+        // The terminal is in front and they typed 10s ago, i.e. after Claude finished.
+        screen.front = 42; screen.idle = 10
+        await waiter(paths, rec, clock: Clock(t0.addingTimeInterval(300)), screen: screen).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.isEmpty)
+        check(History(paths: paths).recent(1).first?.detail == "user in Claude's window")
+    }
+
+    func testDonePushesWhenUserBusyElsewhere() async throws {
+        let screen = Screen()
+        let (paths, rec, spawned, handler) = try setup(screen: screen)
+        await finish(handler, after: 300)
+        // Active, but in another app; or the terminal is in front but untouched since Claude finished.
+        screen.front = 7; screen.idle = 1
+        await waiter(paths, rec, clock: Clock(t0.addingTimeInterval(300)), screen: screen).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.count == 1)
+        try ConfigStore(paths: paths).update { $0.cooldownSeconds = 0 }
+        await finish(handler, after: 300)
+        screen.front = 42; screen.idle = 120
+        await waiter(paths, rec, clock: Clock(t0.addingTimeInterval(300)), screen: screen).run(session: "s1", token: spawned.calls[1].1)
+        check(rec.messages.count == 2)
+    }
+
+    func testShortTaskStillLoggedRightAway() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        await finish(handler, after: 30)
+        check(spawned.calls.isEmpty && rec.messages.isEmpty)
+        check(History(paths: paths).recent(1).first?.detail == "too short (30s < 120s)")
+    }
+
+    func testIdlePromptSkippedWhenUserInClaudesWindow() async throws {
+        let screen = Screen()
+        let (_, rec, _, handler) = try setup(screen: screen)
+        screen.front = 42; screen.idle = 5
+        await hook(handler, #"{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s1"}"#)
+        check(rec.messages.isEmpty)
+        screen.front = 7
+        await hook(handler, #"{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s1"}"#)
+        check(rec.messages.count == 1)
+    }
+
     func testOldInstallNeedsUpgrade() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("s-\(UUID().uuidString).json")
         let old = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/x/rungrinh\" hook claude"}]}]}}"#
@@ -435,6 +514,12 @@ await run("testParallelToolsDontAnswerPermissionPrompt") { try await QuestionWai
 await run("testDeniedPromptFoundInTranscript") { try await QuestionWaitTests().testDeniedPromptFoundInTranscript() }
 await run("testSessionsAreIndependent") { try await QuestionWaitTests().testSessionsAreIndependent() }
 await run("testIdlePromptDefersToPendingQuestion") { try await QuestionWaitTests().testIdlePromptDefersToPendingQuestion() }
+await run("testDonePushesAfterDelayWhenUserAway") { try await QuestionWaitTests().testDonePushesAfterDelayWhenUserAway() }
+await run("testDoneSkippedWhenUserPromptsAgain") { try await QuestionWaitTests().testDoneSkippedWhenUserPromptsAgain() }
+await run("testDoneSkippedWhenUserInClaudesWindow") { try await QuestionWaitTests().testDoneSkippedWhenUserInClaudesWindow() }
+await run("testDonePushesWhenUserBusyElsewhere") { try await QuestionWaitTests().testDonePushesWhenUserBusyElsewhere() }
+await run("testShortTaskStillLoggedRightAway") { try await QuestionWaitTests().testShortTaskStillLoggedRightAway() }
+await run("testIdlePromptSkippedWhenUserInClaudesWindow") { try await QuestionWaitTests().testIdlePromptSkippedWhenUserInClaudesWindow() }
 await run("testOldInstallNeedsUpgrade") { try QuestionWaitTests().testOldInstallNeedsUpgrade() }
 print("UpdaterTests")
 await run("testVersionCompare") { UpdaterTests().testVersionCompare() }

@@ -93,6 +93,9 @@ public struct Config: Codable, Equatable, Sendable {
     public var minTaskSeconds = 120
     /// Minimum gap between two pushes.
     public var cooldownSeconds = 30
+    /// A finished task pushes only if, this long after it ends, the user hasn't sent another prompt
+    /// and isn't using the window Claude runs in (0 = push right away).
+    public var doneDelaySeconds = 60
     /// Only push when the Mac has had no keyboard/mouse input for `idleSeconds`.
     public var onlyWhenIdle = false
     public var idleSeconds = 120
@@ -117,6 +120,7 @@ public struct Config: Codable, Equatable, Sendable {
         ntfy = try c.decodeIfPresent(NtfyConfig.self, forKey: .ntfy) ?? d.ntfy
         minTaskSeconds = try c.decodeIfPresent(Int.self, forKey: .minTaskSeconds) ?? d.minTaskSeconds
         cooldownSeconds = try c.decodeIfPresent(Int.self, forKey: .cooldownSeconds) ?? d.cooldownSeconds
+        doneDelaySeconds = try c.decodeIfPresent(Int.self, forKey: .doneDelaySeconds) ?? d.doneDelaySeconds
         onlyWhenIdle = try c.decodeIfPresent(Bool.self, forKey: .onlyWhenIdle) ?? d.onlyWhenIdle
         idleSeconds = try c.decodeIfPresent(Int.self, forKey: .idleSeconds) ?? d.idleSeconds
         quietHours = try c.decodeIfPresent(QuietHours.self, forKey: .quietHours) ?? d.quietHours
