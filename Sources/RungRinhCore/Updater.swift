@@ -43,6 +43,10 @@ public struct Updater: Sendable {
 
     public init() {}
 
+    public static func releaseURL(_ version: Version) -> URL {
+        URL(string: "https://github.com/\(repo)/releases/tag/v\(version)")!
+    }
+
     /// Version of the running app bundle, or nil when running outside one (swift run).
     /// Resolves symlinks first: the CLI runs as ~/.local/bin/rungrinh → RungRinh.app/Contents/MacOS/rungrinh,
     /// and Bundle.main alone would look for an Info.plist next to the symlink.

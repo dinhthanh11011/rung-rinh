@@ -20,9 +20,9 @@ curl -fsSL https://raw.githubusercontent.com/dinhthanh11011/rung-rinh/main/insta
 Nếu muốn build từ source: `scripts/build-app.sh` (chỉ cần Command Line Tools: `xcode-select --install`).
 
 1. Bấm icon 🔔 trên menu bar.
-2. Chọn Bark và dán device key (key là phần nằm trong URL `https://api.day.app/<KEY>/...` hiện trong app Bark), hoặc chọn ntfy và nhập topic.
-3. Bấm **Gửi thử**.
-4. Bấm **Cài hook** để gắn vào Claude Code. App ghi vào `~/.claude/settings.json` và backup bản cũ thành `settings.json.rungrinh-backup`.
+2. Tab **Thông báo**: chọn Bark và dán device key (key là phần nằm trong URL `https://api.day.app/<KEY>/...` hiện trong app Bark), hoặc chọn ntfy và nhập topic. Bấm **Gửi thử**.
+3. Tab **Claude**: bấm **Cài hook** để gắn vào Claude Code. App ghi vào `~/.claude/settings.json` và backup bản cũ thành `settings.json.rungrinh-backup`.
+4. Tab **Quy tắc** chỉnh chống spam, giờ yên tĩnh; **Lịch sử** xem các lần push (kể cả bị bỏ qua và lý do); **Ứng dụng** để cập nhật, mở cùng máy, thoát.
 
 ## Chống spam
 
@@ -67,6 +67,7 @@ Config lưu ở `~/.config/rungrinh/config.json` (quyền 600), dùng chung cho 
 swift build
 swift run selftest      # test (dạng executable, vì XCTest / swift-testing cần Xcode)
 swift run RungRinhApp   # chạy app trực tiếp
+RUNGRINH_DEBUG_WINDOW=1 swift run RungRinhApp   # mở popover trong cửa sổ thường (để chụp màn hình)
 swift scripts/make-icon.swift         # vẽ lại Resources/AppIcon.icns
 scripts/release.sh v0.2.0 "ghi chú"   # build universal + tạo GitHub release cho install.sh
 ```

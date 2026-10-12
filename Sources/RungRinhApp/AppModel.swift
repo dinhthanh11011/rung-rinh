@@ -4,18 +4,36 @@ import RungRinhCore
 import ServiceManagement
 import SwiftUI
 
+/// One-line feedback shown under the control that caused it.
+struct Notice: Equatable {
+    enum Kind { case success, error, info, progress }
+    let kind: Kind
+    let text: String
+
+    static func success(_ t: String) -> Notice { Notice(kind: .success, text: t) }
+    static func error(_ t: String) -> Notice { Notice(kind: .error, text: t) }
+    static func info(_ t: String) -> Notice { Notice(kind: .info, text: t) }
+    static func progress(_ t: String) -> Notice { Notice(kind: .progress, text: t) }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var config: Config
     @Published var history: [HistoryEntry] = []
     @Published var hooksInstalled = false
-    @Published var status: String?
+    /// Feedback for the push test (Push tab).
+    @Published var pushNotice: Notice?
+    /// Feedback for hooks / login item (Claude and App tabs).
+    @Published var notice: Notice?
     @Published var sending = false
     @Published var launchAtLogin = false
     @Published var update: Release?
-    @Published var updateStatus: String?
+    @Published var updateNotice: Notice?
     @Published var checkingUpdate = false
     @Published var installingUpdate = false
+    @Published private(set) var lastUpdateCheck: Date?
+    /// Set on the first launch after the version changed, i.e. right after an update.
+    @Published var justUpdatedTo: Version?
 
     let store = ConfigStore()
     private let installer = ClaudeHookInstaller()
@@ -24,13 +42,17 @@ final class AppModel: ObservableObject {
     private var timer: Timer?
     private var updateTimer: Timer?
     private let updater = Updater()
-    private var lastUpdateCheck: Date?
     private var wakeObserver: NSObjectProtocol?
+    private var debugWindow: NSWindow?
     let currentVersion = Updater.currentVersion
 
     init() {
         config = store.load()
         reload()
+        noteVersionChange()
+        if ProcessInfo.processInfo.environment["RUNGRINH_DEBUG_WINDOW"] != nil {
+            DispatchQueue.main.async { self.openDebugWindow() }
+        }
         // Pick up changes made from the CLI (rungrinh off, snooze, ...) and snooze expiry.
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.reload() }
@@ -56,7 +78,7 @@ final class AppModel: ObservableObject {
     func reload() {
         let fresh = store.load()
         if !dirty, fresh != config { config = fresh }
-        history = History().recent(10)
+        history = History().recent(30)
         hooksInstalled = installer.isInstalled()
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -104,13 +126,13 @@ final class AppModel: ObservableObject {
 
     func sendTest() {
         sending = true
-        status = nil
+        pushNotice = .progress("Đang gửi…")
         let config = self.config
         Task {
             try? store.save(config)
             let r = await Dispatcher().dispatch(.test, Message(title: "🔔 Rung Rinh", body: "Test push từ menu bar ✅"), config: config)
             sending = false
-            status = r.sent ? "Đã gửi ✓" : "Lỗi: \(r.error ?? "?")"
+            pushNotice = r.sent ? .success("Đã gửi, kiểm tra điện thoại") : .error(r.error ?? "Không gửi được")
             reload()
         }
     }
@@ -119,13 +141,13 @@ final class AppModel: ObservableObject {
         do {
             if hooksInstalled {
                 try installer.uninstall()
-                status = "Đã gỡ hook Claude Code"
+                notice = .success("Đã gỡ hook Claude Code")
             } else {
                 try installer.install(binaryPath: cliPath)
-                status = "Đã cài hook (backup: settings.json.rungrinh-backup)"
+                notice = .success("Đã cài hook, bản cũ lưu ở settings.json.rungrinh-backup")
             }
         } catch {
-            status = "Lỗi: \(error.localizedDescription)"
+            notice = .error(error.localizedDescription)
         }
         reload()
     }
@@ -134,12 +156,26 @@ final class AppModel: ObservableObject {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            status = "Login item: \(error.localizedDescription)"
+            notice = .error("Mở cùng máy: \(error.localizedDescription)")
         }
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     // MARK: - Updates
+
+    private static let lastRunVersionKey = "lastRunVersion"
+
+    private func noteVersionChange() {
+        guard let current = currentVersion else { return }
+        let defaults = UserDefaults.standard
+        if let previous = defaults.string(forKey: Self.lastRunVersionKey).flatMap(Version.init) {
+            if previous < current { justUpdatedTo = current }
+        } else if FileManager.default.fileExists(atPath: store.paths.config.path) {
+            // Versions before 0.3.0 didn't record themselves; an existing config means this isn't a fresh install.
+            justUpdatedTo = current
+        }
+        defaults.set(current.description, forKey: Self.lastRunVersionKey)
+    }
 
     /// Called when the popover opens; cheap enough but no need to hit GitHub on every click.
     func checkForUpdateIfStale() {
@@ -149,23 +185,24 @@ final class AppModel: ObservableObject {
 
     func checkForUpdate(manual: Bool) async {
         guard let current = currentVersion else {
-            if manual { updateStatus = "Đang chạy ngoài app bundle, không kiểm tra được" }
+            if manual { updateNotice = .info("Bản dev (chạy ngoài app bundle) không tự cập nhật") }
             return
         }
         guard !checkingUpdate, !installingUpdate else { return }
         checkingUpdate = true
         lastUpdateCheck = Date()
+        if manual { updateNotice = .progress("Đang kiểm tra…") }
         defer { checkingUpdate = false }
         do {
             update = try await updater.availableUpdate(current: current)
             if let update {
-                updateStatus = "Có bản mới \(update.tag)"
+                updateNotice = .info("Có bản mới \(update.tag)")
                 if config.autoUpdate && !manual { installUpdate() }
-            } else if manual {
-                updateStatus = "Đang dùng bản mới nhất"
+            } else {
+                updateNotice = .success("Đang dùng bản mới nhất (\(current))")
             }
         } catch {
-            if manual { updateStatus = "Lỗi kiểm tra: \(error.localizedDescription)" }
+            updateNotice = .error("Không kiểm tra được: \(error.localizedDescription)")
         }
     }
 
@@ -176,13 +213,22 @@ final class AppModel: ObservableObject {
             try updater.install(tag: update.tag, log: store.paths.log) { code in
                 Task { @MainActor [weak self] in
                     self?.installingUpdate = false
-                    self?.updateStatus = "Cập nhật lỗi (exit \(code)), xem rungrinh.log"
+                    self?.updateNotice = .error("Cập nhật lỗi (exit \(code)), xem rungrinh.log")
                 }
             }
             installingUpdate = true
-            updateStatus = "Đang cập nhật lên \(update.tag)…"
+            updateNotice = .progress("Đang tải \(update.tag). App sẽ tự đóng rồi mở lại…")
         } catch {
-            updateStatus = "Lỗi cập nhật: \(error.localizedDescription)"
+            updateNotice = .error("Không chạy được trình cập nhật: \(error.localizedDescription)")
         }
+    }
+
+    /// Dev aid: RUNGRINH_DEBUG_WINDOW=1 shows the popover content in a normal window, e.g. for screenshots.
+    private func openDebugWindow() {
+        let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: self)))
+        window.title = "Rung Rinh"
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        debugWindow = window
     }
 }
