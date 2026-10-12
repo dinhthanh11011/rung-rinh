@@ -2,7 +2,9 @@ import Foundation
 
 /// Adds / removes our entries in Claude Code's settings.json, leaving every other hook untouched.
 public struct ClaudeHookInstaller: Sendable {
-    public static let events = ["UserPromptSubmit", "Stop", "Notification"]
+    /// PreToolUse / PostToolUse / SessionEnd tell us a question was answered (or abandoned),
+    /// so the delayed "Claude is waiting" push is dropped.
+    public static let events = ["UserPromptSubmit", "Stop", "Notification", "PreToolUse", "PostToolUse", "SessionEnd"]
 
     public let settingsURL: URL
 
@@ -65,13 +67,23 @@ public struct ClaudeHookInstaller: Sendable {
         return out
     }
 
-    public func isInstalled() -> Bool {
-        guard let hooks = (try? readSettings())?["hooks"] as? [String: Any] else { return false }
-        return Self.events.allSatisfy { event in
+    private func installedEvents() -> [String] {
+        guard let hooks = (try? readSettings())?["hooks"] as? [String: Any] else { return [] }
+        return hooks.keys.filter { event in
             ((hooks[event] as? [[String: Any]]) ?? []).contains { group in
                 ((group["hooks"] as? [[String: Any]]) ?? []).contains(where: Self.isOurs)
             }
         }
+    }
+
+    public func isInstalled() -> Bool {
+        Set(installedEvents()).isSuperset(of: Self.events)
+    }
+
+    /// Installed by an older version that hooked fewer events.
+    public func needsUpgrade() -> Bool {
+        let installed = installedEvents()
+        return !installed.isEmpty && !Set(installed).isSuperset(of: Self.events)
     }
 
     public func install(binaryPath: String) throws {

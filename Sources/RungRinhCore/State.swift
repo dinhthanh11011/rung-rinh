@@ -9,11 +9,15 @@ public struct StateStore: Sendable {
         self.paths = paths
     }
 
-    private func sessionFile(_ id: String) -> URL {
+    static func safeName(_ id: String) -> String {
         let safe = id.unicodeScalars
             .map { CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" ? String($0) : "_" }
             .joined()
-        return paths.sessions.appendingPathComponent(safe.isEmpty ? "default" : safe)
+        return safe.isEmpty ? "default" : safe
+    }
+
+    private func sessionFile(_ id: String) -> URL {
+        paths.sessions.appendingPathComponent(Self.safeName(id))
     }
 
     public func markStart(session: String, at date: Date = Date()) {
@@ -34,7 +38,9 @@ public struct StateStore: Sendable {
 
     public func pruneSessions(olderThan age: TimeInterval, now: Date = Date()) {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: paths.sessions, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+        let files = [paths.sessions, paths.pending].flatMap {
+            (try? fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        }
         for f in files {
             let m = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? now
             if now.timeIntervalSince(m) > age { try? fm.removeItem(at: f) }

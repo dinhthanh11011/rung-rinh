@@ -79,6 +79,8 @@ final class AppModel: ObservableObject {
         let fresh = store.load()
         if !dirty, fresh != config { config = fresh }
         history = History().recent(30)
+        // Hooks from an older version miss the events that cancel the delayed question push.
+        if installer.needsUpgrade() { try? installer.install(binaryPath: cliPath) }
         hooksInstalled = installer.isInstalled()
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }

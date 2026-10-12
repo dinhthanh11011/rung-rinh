@@ -223,6 +223,115 @@ struct HookHandlerTests {
     }
 }
 
+struct QuestionWaitTests {
+    final class Spawned: @unchecked Sendable {
+        var calls: [(String, String)] = []
+    }
+    final class Clock: @unchecked Sendable {
+        var now: Date
+        init(_ now: Date) { self.now = now }
+    }
+
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func setup() throws -> (Paths, HookHandlerTests.Recorder, Spawned, ClaudeHookHandler) {
+        let paths = Paths(base: FileManager.default.temporaryDirectory.appendingPathComponent("rungrinh-\(UUID().uuidString)"))
+        var c = Config()
+        c.bark.key = "k"
+        try ConfigStore(paths: paths).save(c)
+        let rec = HookHandlerTests.Recorder()
+        let spawned = Spawned()
+        let handler = ClaudeHookHandler(
+            paths: paths,
+            dispatcher: Dispatcher(paths: paths, idleSeconds: { 999 }, makeNotifier: { _ in rec }),
+            spawnWaiter: { spawned.calls.append(($0, $1)) }
+        )
+        return (paths, rec, spawned, handler)
+    }
+
+    /// Runs the waiter with a fake clock where each sleep jumps time forward.
+    func waiter(_ paths: Paths, _ rec: HookHandlerTests.Recorder, clock: Clock) -> QuestionWaiter {
+        QuestionWaiter(
+            paths: paths,
+            dispatcher: Dispatcher(paths: paths, idleSeconds: { 999 }, makeNotifier: { _ in rec }),
+            now: { clock.now },
+            sleep: { clock.now = clock.now.addingTimeInterval(max(0, $0)) }
+        )
+    }
+
+    func ask(_ handler: ClaudeHookHandler, at t: Date) async {
+        await handler.handle(Data(#"{"hook_event_name":"PreToolUse","session_id":"s1","cwd":"/p/app","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Dùng Postgres hay SQLite?","options":[]}]}}"#.utf8), now: t)
+    }
+
+    func testAnsweredQuestionNeverPushes() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        await ask(handler, at: t0)
+        check(rec.messages.isEmpty, "no push right away")
+        check(spawned.calls.count == 1)
+        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion"}"#.utf8), now: t0.addingTimeInterval(20))
+        await waiter(paths, rec, clock: Clock(t0)).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.isEmpty)
+    }
+
+    func testUnansweredPushesThenRemindsOnce() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        // The dispatcher's cooldown runs on the real clock, which the fake one doesn't move.
+        try ConfigStore(paths: paths).update { $0.cooldownSeconds = 0 }
+        await ask(handler, at: t0)
+        let clock = Clock(t0)
+        await waiter(paths, rec, clock: clock).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.count == 2, "got \(rec.messages.count)")
+        check(rec.messages.first?.title == "⏳ app: Claude chờ bạn 1m00s", rec.messages.first?.title ?? "")
+        check(rec.messages.first?.body == "Dùng Postgres hay SQLite?")
+        check(rec.messages.last?.title == "⏳ app: Claude chờ bạn 11m00s", rec.messages.last?.title ?? "")
+    }
+
+    func testNewerQuestionSupersedesOldWaiter() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        try ConfigStore(paths: paths).update { $0.askReminderSeconds = 0 }
+        await ask(handler, at: t0)
+        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion"}"#.utf8), now: t0.addingTimeInterval(5))
+        await ask(handler, at: t0.addingTimeInterval(10))
+        await waiter(paths, rec, clock: Clock(t0)).run(session: "s1", token: spawned.calls[0].1)
+        check(rec.messages.isEmpty, "old waiter stays quiet")
+        await waiter(paths, rec, clock: Clock(t0.addingTimeInterval(10))).run(session: "s1", token: spawned.calls[1].1)
+        check(rec.messages.count == 1)
+    }
+
+    func testPermissionPromptClearedByOwnToolOrNextTool() async throws {
+        let (paths, _, spawned, handler) = try setup()
+        let store = PendingStore(paths: paths)
+        await handler.handle(Data(#"{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"s1","message":"Claude needs your permission to use Bash"}"#.utf8), now: t0)
+        check(spawned.calls.count == 1)
+        check(store.get(session: "s1")?.tool == "Bash")
+        // A parallel Read finishing doesn't answer the Bash prompt.
+        await handler.handle(Data(#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"Read"}"#.utf8), now: t0)
+        check(store.get(session: "s1") != nil)
+        // Denied, and Claude moved on to another tool.
+        await handler.handle(Data(#"{"hook_event_name":"PreToolUse","session_id":"s1","tool_name":"Grep","tool_input":{"pattern":"x"}}"#.utf8), now: t0)
+        check(store.get(session: "s1") == nil)
+    }
+
+    func testIdlePromptDefersToPendingQuestion() async throws {
+        let (_, rec, _, handler) = try setup()
+        await ask(handler, at: t0)
+        await handler.handle(Data(#"{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"s1","message":"Claude is waiting for your input"}"#.utf8), now: t0.addingTimeInterval(60))
+        check(rec.messages.isEmpty)
+    }
+
+    func testOldInstallNeedsUpgrade() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("s-\(UUID().uuidString).json")
+        let old = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/x/rungrinh\" hook claude"}]}]}}"#
+        try Data(old.utf8).write(to: url)
+        let installer = ClaudeHookInstaller(settingsURL: url)
+        check(installer.needsUpgrade())
+        check(!installer.isInstalled())
+        try installer.install(binaryPath: "/x/rungrinh")
+        check(!installer.needsUpgrade())
+        check(installer.isInstalled())
+    }
+}
+
 struct UpdaterTests {
     func testVersionCompare() {
         check(Version("v0.1.0")! < Version("0.2.0")!)
@@ -282,7 +391,13 @@ await run("testInstallIntoMissingFile") { try HookInstallerTests().testInstallIn
 print("HookHandlerTests")
 await run("testPromptThenStopPushesWithDuration") { try await HookHandlerTests().testPromptThenStopPushesWithDuration() }
 await run("testTranscriptLastAssistantText") { try HookHandlerTests().testTranscriptLastAssistantText() }
-
+print("QuestionWaitTests")
+await run("testAnsweredQuestionNeverPushes") { try await QuestionWaitTests().testAnsweredQuestionNeverPushes() }
+await run("testUnansweredPushesThenRemindsOnce") { try await QuestionWaitTests().testUnansweredPushesThenRemindsOnce() }
+await run("testNewerQuestionSupersedesOldWaiter") { try await QuestionWaitTests().testNewerQuestionSupersedesOldWaiter() }
+await run("testPermissionPromptClearedByOwnToolOrNextTool") { try await QuestionWaitTests().testPermissionPromptClearedByOwnToolOrNextTool() }
+await run("testIdlePromptDefersToPendingQuestion") { try await QuestionWaitTests().testIdlePromptDefersToPendingQuestion() }
+await run("testOldInstallNeedsUpgrade") { try QuestionWaitTests().testOldInstallNeedsUpgrade() }
 print("UpdaterTests")
 await run("testVersionCompare") { UpdaterTests().testVersionCompare() }
 await run("testParseRelease") { try UpdaterTests().testParseRelease() }

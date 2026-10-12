@@ -21,7 +21,7 @@ Usage:
 Config keys: enabled, provider (bark|ntfy), bark.key, bark.server, bark.sound, bark.level,
   ntfy.server, ntfy.topic, ntfy.token, ntfy.priority, minTaskSeconds, cooldownSeconds,
   onlyWhenIdle, idleSeconds, quietHours.enabled, quietHours.start, quietHours.end (minutes),
-  events.stop, events.notification, autoUpdate
+  events.stop, events.notification, askDelaySeconds, askReminderSeconds (0 = no reminder), autoUpdate
 """
 
 func fail(_ text: String, code: Int32 = 1) -> Never {
@@ -132,6 +132,13 @@ case "command-done":
     await dispatcher.dispatch(.command(duration: elapsed), msg)
 
 case "hook":
+    if tail.first == "wait" {
+        // Spawned detached by the Claude hook; see QuestionWaiter.
+        let a = Array(tail.dropFirst())
+        guard a.count == 2 else { fail("usage: rungrinh hook wait <session> <token>") }
+        await QuestionWaiter().run(session: a[0], token: a[1])
+        exit(0)
+    }
     guard tail.first == "claude" else { fail("usage: rungrinh hook claude") }
     let data = FileHandle.standardInput.readDataToEndOfFile()
     await ClaudeHookHandler().handle(data)
@@ -166,6 +173,7 @@ case "status":
     lines += [
         "min task:     \(c.minTaskSeconds)s   cooldown: \(c.cooldownSeconds)s",
         "only idle:    \(c.onlyWhenIdle ? "yes (≥ \(c.idleSeconds)s)" : "no")   idle now: \(Int(IdleTime.seconds()))s",
+        "ask delay:    push after \(c.askDelaySeconds)s unanswered" + (c.askReminderSeconds > 0 ? ", remind once after +\(c.askReminderSeconds)s" : ""),
         "quiet hours:  " + (c.quietHours.enabled ? String(format: "%02d:%02d–%02d:%02d", c.quietHours.start / 60, c.quietHours.start % 60, c.quietHours.end / 60, c.quietHours.end % 60) : "off"),
         "claude hooks: \(ClaudeHookInstaller().isInstalled() ? "installed" : "not installed")",
         "last push:    \(state.lastSentAt.map(describe) ?? "-")",

@@ -21,9 +21,12 @@ public struct Paths: Sendable {
     public var state: URL { base.appendingPathComponent("state") }
     public var sessions: URL { state.appendingPathComponent("sessions") }
     public var lastSent: URL { state.appendingPathComponent("last_sent") }
+    /// Questions Claude is waiting on, one file per session.
+    public var pending: URL { state.appendingPathComponent("pending") }
 
     public func ensureDirs() throws {
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
     }
 }
 

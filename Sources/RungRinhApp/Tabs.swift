@@ -144,6 +144,17 @@ struct ClaudeTab: View {
                 Toggle("Claude làm xong task", isOn: model.binding(\.events.stop))
                 Toggle("Claude cần cấp quyền hoặc chờ trả lời", isOn: model.binding(\.events.notification))
             }
+
+            if model.config.events.notification {
+                Section {
+                    SecondsStepper(title: "Báo khi chưa trả lời sau", value: model.binding(\.askDelaySeconds), range: 0...1800, step: 15)
+                    SecondsStepper(title: "Nhắc lại một lần sau thêm", value: model.binding(\.askReminderSeconds), range: 0...7200, step: 60)
+                } header: {
+                    Text("Claude hỏi hoặc xin quyền")
+                } footer: {
+                    FormFooter("Bạn trả lời kịp thì không push gì. Đặt nhắc lại = 0 để chỉ báo một lần.")
+                }
+            }
         }
     }
 }

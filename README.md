@@ -31,6 +31,7 @@ Nếu muốn build từ source: `scripts/build-app.sh` (chỉ cần Command Line
 | Chỉ báo khi task chạy ≥ N giây | 60s |
 | Hai lần push cách nhau tối thiểu | 30s |
 | Chỉ báo khi bạn rời máy (không chạm phím/chuột ≥ N giây) | tắt |
+| Claude hỏi / xin quyền: chỉ báo khi chưa trả lời sau N giây, nhắc lại 1 lần | 60s, +10 phút |
 | Giờ yên tĩnh | tắt |
 | Tạm dừng 30 phút / 1 giờ / tới sáng | — |
 
@@ -38,10 +39,14 @@ Lần push nào bị bỏ qua cũng được ghi lý do vào phần "Gần đây
 
 ## Claude Code
 
-`rungrinh hook claude` được gọi ở 3 event:
+`rungrinh hook claude` được gọi ở các event:
 - `UserPromptSubmit`: ghi lại thời điểm bắt đầu task.
 - `Stop`: tính thời lượng rồi push `✅ <project> xong sau 4m12s` kèm trích đoạn câu trả lời cuối.
-- `Notification`: Claude đang chờ cấp quyền hoặc chờ input → push `⏳ Claude cần bạn`.
+- `PreToolUse` (`AskUserQuestion`, `ExitPlanMode`) và `Notification` (xin quyền): Claude hỏi bạn. Hook **không push ngay** mà chạy một tiến trình nền. Nếu sau `askDelaySeconds` (60s) câu hỏi vẫn chưa được trả lời thì push `⏳ <project>: Claude chờ bạn 1m00s` kèm nội dung câu hỏi. Còn chưa trả lời thì nhắc lại **đúng 1 lần** sau `askReminderSeconds` (10 phút, đặt 0 để tắt).
+- `PostToolUse`, `PreToolUse` của tool khác, `SessionEnd`: bạn đã trả lời, đã từ chối hoặc đã thoát, nên huỷ push đang chờ.
+- `Notification` `idle_prompt`: Claude tự chờ khoảng 60s ở cuối lượt rồi mới báo, nên lúc này push `⏳ Claude cần bạn` luôn.
+
+Bản cũ chỉ cài 3 hook đầu. App sẽ tự cài thêm các hook còn thiếu khi mở; nếu dùng CLI thì chạy lại `rungrinh install-hooks`.
 
 Hook không cần app đang chạy và luôn exit 0, nên không bao giờ làm Claude Code bị chặn. Lỗi được ghi vào `~/.config/rungrinh/rungrinh.log`.
 

@@ -98,6 +98,10 @@ public struct Config: Codable, Equatable, Sendable {
     public var idleSeconds = 120
     public var quietHours = QuietHours()
     public var events = EventToggles()
+    /// Claude asked a question / wants permission: push only if it is still unanswered after this long.
+    public var askDelaySeconds = 60
+    /// One more push if it is still unanswered this long after the first one (0 = never).
+    public var askReminderSeconds = 600
     /// The menu bar app installs new GitHub releases by itself.
     public var autoUpdate = true
 
@@ -117,6 +121,8 @@ public struct Config: Codable, Equatable, Sendable {
         idleSeconds = try c.decodeIfPresent(Int.self, forKey: .idleSeconds) ?? d.idleSeconds
         quietHours = try c.decodeIfPresent(QuietHours.self, forKey: .quietHours) ?? d.quietHours
         events = try c.decodeIfPresent(EventToggles.self, forKey: .events) ?? d.events
+        askDelaySeconds = try c.decodeIfPresent(Int.self, forKey: .askDelaySeconds) ?? d.askDelaySeconds
+        askReminderSeconds = try c.decodeIfPresent(Int.self, forKey: .askReminderSeconds) ?? d.askReminderSeconds
         autoUpdate = try c.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? d.autoUpdate
     }
 

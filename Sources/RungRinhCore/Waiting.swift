@@ -1,0 +1,126 @@
+import Foundation
+
+/// Claude is blocked on the user: a question (AskUserQuestion / ExitPlanMode) or a permission prompt.
+public struct PendingQuestion: Codable, Equatable, Sendable {
+    /// Identifies this wait, so a waiter never pushes for a newer question it wasn't spawned for.
+    public var token: String
+    public var since: Date
+    public var project: String
+    /// The text shown to the user, e.g. the question or "Claude needs your permission to use Bash".
+    public var text: String
+    /// Tool the prompt belongs to; when it finishes, the prompt was answered. nil = unknown.
+    public var tool: String?
+
+    public init(token: String = UUID().uuidString, since: Date, project: String, text: String, tool: String?) {
+        self.token = token
+        self.since = since
+        self.project = project
+        self.text = text
+        self.tool = tool
+    }
+}
+
+public struct PendingStore: Sendable {
+    public let paths: Paths
+
+    public init(paths: Paths = Paths()) {
+        self.paths = paths
+    }
+
+    private func file(_ session: String) -> URL {
+        paths.pending.appendingPathComponent(StateStore.safeName(session))
+    }
+
+    public func get(session: String) -> PendingQuestion? {
+        guard let data = try? Data(contentsOf: file(session)) else { return nil }
+        return try? JSONCoding.decoder.decode(PendingQuestion.self, from: data)
+    }
+
+    public func set(_ pending: PendingQuestion, session: String) {
+        try? paths.ensureDirs()
+        guard let data = try? JSONCoding.encoder.encode(pending) else { return }
+        try? data.write(to: file(session), options: .atomic)
+    }
+
+    public func clear(session: String) {
+        try? FileManager.default.removeItem(at: file(session))
+    }
+}
+
+/// Runs in a detached `rungrinh hook wait` process: sleeps, and pushes only if the
+/// question is still unanswered. At most one reminder follows, so nothing is spammed.
+public struct QuestionWaiter: Sendable {
+    public let paths: Paths
+    public let dispatcher: Dispatcher
+    public let now: @Sendable () -> Date
+    public let sleep: @Sendable (TimeInterval) async -> Void
+
+    public init(
+        paths: Paths = Paths(),
+        dispatcher: Dispatcher? = nil,
+        now: @escaping @Sendable () -> Date = { Date() },
+        sleep: @escaping @Sendable (TimeInterval) async -> Void = { secs in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, secs) * 1_000_000_000))
+        }
+    ) {
+        self.paths = paths
+        self.dispatcher = dispatcher ?? Dispatcher(paths: paths)
+        self.now = now
+        self.sleep = sleep
+    }
+
+    public func run(session: String, token: String) async {
+        let store = PendingStore(paths: paths)
+        let config = ConfigStore(paths: paths).load()
+        let first = TimeInterval(max(0, config.askDelaySeconds))
+        var offsets = [first]
+        if config.askReminderSeconds > 0 { offsets.append(first + TimeInterval(config.askReminderSeconds)) }
+
+        for offset in offsets {
+            guard let since = store.get(session: session)?.since else { return }
+            await sleep(since.addingTimeInterval(offset).timeIntervalSince(now()))
+            // Answered, superseded by a newer question, or Claude moved on.
+            guard let pending = store.get(session: session), pending.token == token else { return }
+            let waited = formatDuration(now().timeIntervalSince(pending.since))
+            await dispatcher.dispatch(
+                .claudeNotification,
+                Message(
+                    title: "⏳ \(pending.project): Claude chờ bạn \(waited)",
+                    body: Transcript.excerpt(pending.text),
+                    priority: .high,
+                    tags: ["hourglass"]
+                )
+            )
+        }
+    }
+}
+
+public enum Detached {
+    /// Starts `executable args...` in its own session with stdio on /dev/null and no inherited fds,
+    /// so Claude Code (which waits for the hook's pipes to close) doesn't wait for it.
+    @discardableResult
+    public static func spawn(_ executable: String, _ args: [String]) -> Bool {
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        defer { posix_spawnattr_destroy(&attr) }
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
+
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        for fd: Int32 in [0, 1, 2] {
+            posix_spawn_file_actions_addopen(&actions, fd, "/dev/null", fd == 0 ? O_RDONLY : O_WRONLY, 0)
+        }
+
+        let argv = ([executable] + args).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        var pid: pid_t = 0
+        return posix_spawn(&pid, executable, &actions, &attr, argv, environ) == 0
+    }
+
+    /// This binary with symlinks resolved.
+    public static var selfPath: String {
+        let raw = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        return URL(fileURLWithPath: raw).resolvingSymlinksInPath().path
+    }
+}
