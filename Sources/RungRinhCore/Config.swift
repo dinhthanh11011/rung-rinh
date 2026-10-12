@@ -90,7 +90,7 @@ public struct Config: Codable, Equatable, Sendable {
     public var bark = BarkConfig()
     public var ntfy = NtfyConfig()
     /// Claude tasks / wrapped commands shorter than this don't push.
-    public var minTaskSeconds = 60
+    public var minTaskSeconds = 120
     /// Minimum gap between two pushes.
     public var cooldownSeconds = 30
     /// Only push when the Mac has had no keyboard/mouse input for `idleSeconds`.
@@ -99,7 +99,7 @@ public struct Config: Codable, Equatable, Sendable {
     public var quietHours = QuietHours()
     public var events = EventToggles()
     /// Claude asked a question / wants permission: push only if it is still unanswered after this long.
-    public var askDelaySeconds = 60
+    public var askDelaySeconds = 300
     /// One more push if it is still unanswered this long after the first one (0 = never).
     public var askReminderSeconds = 600
     /// The menu bar app installs new GitHub releases by itself.

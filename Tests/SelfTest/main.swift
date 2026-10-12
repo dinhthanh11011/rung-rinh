@@ -46,8 +46,8 @@ struct GateTests {
     }
 
     func testTooShort() {
-        check(Gate.decide(.claudeStop(duration: 12), config: configured(), context: ctx()) == .skip("too short (12s < 60s)"))
-        check(Gate.decide(.command(duration: 5), config: configured(), context: ctx()) == .skip("too short (5s < 60s)"))
+        check(Gate.decide(.claudeStop(duration: 12), config: configured(), context: ctx()) == .skip("too short (12s < 120s)"))
+        check(Gate.decide(.command(duration: 5), config: configured(), context: ctx()) == .skip("too short (5s < 120s)"))
     }
 
     func testNotificationIgnoresMinDuration() {
@@ -97,7 +97,7 @@ struct ConfigTests {
         let c = try JSONCoding.decoder.decode(Config.self, from: Data(#"{"bark":{"key":"k"}}"#.utf8))
         check(c.bark.key == "k")
         check(c.bark.server == "https://api.day.app")
-        check(c.minTaskSeconds == 60)
+        check(c.minTaskSeconds == 120)
     }
 
     func testSetDottedKey() throws {
@@ -206,7 +206,7 @@ struct HookHandlerTests {
         await handler.handle(Data(#"{"hook_event_name":"Stop","session_id":"s1","cwd":"/p/my-app"}"#.utf8), now: t0.addingTimeInterval(305))
         check(rec.messages.count == 1)
         let last = History(paths: paths).recent(1).first?.detail
-        check(last == "too short (5s < 60s)", "got \(last ?? "nil")")
+        check(last == "too short (5s < 120s)", "got \(last ?? "nil")")
     }
 
     func testTranscriptLastAssistantText() throws {
@@ -286,9 +286,9 @@ struct QuestionWaitTests {
         let clock = Clock(t0)
         await waiter(paths, rec, clock: clock).run(session: "s1", token: spawned.calls[0].1)
         check(rec.messages.count == 2, "got \(rec.messages.count)")
-        check(rec.messages.first?.title == "⏳ app: Claude chờ bạn 1m00s", rec.messages.first?.title ?? "")
+        check(rec.messages.first?.title == "⏳ app: Claude chờ bạn 5m00s", rec.messages.first?.title ?? "")
         check(rec.messages.first?.body == "Dùng Postgres hay SQLite?")
-        check(rec.messages.last?.title == "⏳ app: Claude chờ bạn 11m00s", rec.messages.last?.title ?? "")
+        check(rec.messages.last?.title == "⏳ app: Claude chờ bạn 15m00s", rec.messages.last?.title ?? "")
     }
 
     func testNewerQuestionSupersedesOldWaiter() async throws {
