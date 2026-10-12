@@ -69,10 +69,6 @@ struct SettingsView: View {
             .frame(height: 400)
         }
         .frame(width: 400)
-        .onAppear {
-            model.reload()
-            model.checkForUpdateIfStale()
-        }
     }
 
     /// Small dots on tabs that need attention.
