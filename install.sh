@@ -26,7 +26,7 @@ done
 
 if [ "${UNINSTALL}" = 1 ]; then
   [ -x "${DEST}/${APP}/Contents/MacOS/rungrinh" ] && "${DEST}/${APP}/Contents/MacOS/rungrinh" uninstall-hooks || true
-  pkill -x RungRinhBar 2>/dev/null || true
+  pkill -a -x RungRinhBar 2>/dev/null || true
   rm -rf "${DEST:?}/${APP}"
   rm -f "${BIN_DIR}/rungrinh"
   echo "✅ Đã gỡ Rung Rinh (config vẫn giữ ở ~/.config/rungrinh)"
@@ -69,9 +69,10 @@ fi
 
 echo "==> Cài vào ${DEST}/${APP}"
 mkdir -p "${DEST}" "${BIN_DIR}"
-pkill -x RungRinhBar 2>/dev/null || true
-# Wait for the old app to exit, otherwise `open` below can fail with -600.
-for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x RungRinhBar >/dev/null || break; sleep 0.3; done
+# -a: when the app's updater runs this script the app is our ancestor, which pkill/pgrep skip by default.
+pkill -a -x RungRinhBar 2>/dev/null || true
+# Wait for the old app to exit, otherwise `open` below just re-activates it (or fails with -600).
+for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -a -x RungRinhBar >/dev/null || break; sleep 0.3; done
 rm -rf "${DEST:?}/${APP}"
 /usr/bin/ditto "${SRC}" "${DEST}/${APP}"
 /usr/bin/xattr -dr com.apple.quarantine "${DEST}/${APP}" 2>/dev/null || true

@@ -212,8 +212,14 @@ final class AppModel: ObservableObject {
         do {
             try updater.install(tag: update.tag, log: store.paths.log) { code in
                 Task { @MainActor [weak self] in
-                    self?.installingUpdate = false
-                    self?.updateNotice = .error("Cập nhật lỗi (exit \(code)), xem rungrinh.log")
+                    guard let self else { return }
+                    if code == 0 {
+                        // Installed, but the script couldn't quit us (older install.sh): restart into the new build.
+                        self.relaunch()
+                    } else {
+                        self.installingUpdate = false
+                        self.updateNotice = .error("Cập nhật lỗi (exit \(code)), xem rungrinh.log")
+                    }
                 }
             }
             installingUpdate = true
@@ -230,5 +236,14 @@ final class AppModel: ObservableObject {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         debugWindow = window
+    }
+
+    private func relaunch() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$2\"",
+                       "relaunch", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundlePath]
+        try? p.run()
+        NSApp.terminate(nil)
     }
 }
