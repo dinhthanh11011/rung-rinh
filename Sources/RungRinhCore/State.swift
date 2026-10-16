@@ -38,7 +38,7 @@ public struct StateStore: Sendable {
 
     public func pruneSessions(olderThan age: TimeInterval, now: Date = Date()) {
         let fm = FileManager.default
-        let files = [paths.sessions, paths.waits, paths.calls].flatMap {
+        let files = [paths.sessions, paths.waits, paths.calls, paths.interrupted].flatMap {
             (try? fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         }
         for f in files {

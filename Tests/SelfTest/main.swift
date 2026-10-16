@@ -253,6 +253,7 @@ struct QuestionWaitTests {
             dispatcher: Dispatcher(paths: paths, idleSeconds: { 999 }, makeNotifier: { _ in rec }),
             hostPids: { [100, 42] }, // hook process, then the terminal app
             presence: Presence(frontmostPid: { screen.front }, idleSeconds: { screen.idle }),
+            environment: ["CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/cc-socks/1.sock", "CLAUDE_CODE_MESSAGING_TOKEN": "tok"],
             spawnWaiter: { spawned.calls.append(($0, $1)) }
         )
         return (paths, rec, spawned, handler)
@@ -434,6 +435,51 @@ struct QuestionWaitTests {
         check(rec.messages.count == 1)
     }
 
+    func fail(_ handler: ClaudeHookHandler, _ error: String, _ message: String, at t: Date? = nil) async {
+        await hook(handler, #"{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p/app"}"#, at: t0)
+        await hook(handler, #"{"hook_event_name":"StopFailure","session_id":"s1","cwd":"/p/app","error":"\#(error)","last_assistant_message":"\#(message)"}"#, at: t ?? t0.addingTimeInterval(400))
+    }
+
+    func testStopFailurePushesRightAway() async throws {
+        let (paths, rec, spawned, handler) = try setup()
+        try ConfigStore(paths: paths).update { $0.cooldownSeconds = 0 }
+        await fail(handler, "authentication_failed", "OAuth token revoked · Please run /login")
+        check(spawned.calls.isEmpty, "no delay for errors")
+        check(rec.messages.map(\.title) == ["🔑 app: Claude dừng, cần /login"], "\(rec.messages.map(\.title))")
+        check(rec.messages.first?.body == "OAuth token revoked · Please run /login")
+        let r = InterruptedStore(paths: paths).get(session: "s1")
+        check(r?.error == "authentication_failed" && r?.hostPids == [100, 42])
+        check(r?.socket == "/tmp/cc-socks/1.sock" && r?.token == "tok")
+        // Even a short task: errors ignore minTaskSeconds.
+        await fail(handler, "overloaded", "API Error: Repeated 529 Overloaded errors", at: t0.addingTimeInterval(3))
+        check(rec.messages.last?.title == "⚠️ app: lỗi server, Claude dừng")
+        // The next prompt means the session moved on.
+        await hook(handler, #"{"hook_event_name":"UserPromptSubmit","session_id":"s1","cwd":"/p/app"}"#)
+        check(InterruptedStore(paths: paths).get(session: "s1") == nil)
+    }
+
+    func testStopFailureSkippedWhenUserInClaudesWindow() async throws {
+        let screen = Screen()
+        let (paths, rec, _, handler) = try setup(screen: screen)
+        screen.front = 42; screen.idle = 3
+        await fail(handler, "rate_limit", "You've hit your session limit · resets 3:45pm")
+        check(rec.messages.isEmpty)
+        check(History(paths: paths).recent(1).first?.detail == "user in Claude's window")
+        check(InterruptedStore(paths: paths).get(session: "s1") != nil, "still remembered")
+    }
+
+    func testUsageLimitResetDate() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Ho_Chi_Minh")!
+        // Wed 2026-10-14 14:00 local.
+        let now = cal.date(from: DateComponents(year: 2026, month: 10, day: 14, hour: 14))!
+        func at(_ d: Int, _ h: Int, _ m: Int) -> Date { cal.date(from: DateComponents(year: 2026, month: 10, day: d, hour: h, minute: m))! }
+        check(UsageLimit.resetDate(from: "You've hit your session limit · resets 3:45pm", now: now, calendar: cal) == at(14, 15, 45))
+        check(UsageLimit.resetDate(from: "resets 9am (Asia/Saigon)", now: now, calendar: cal) == at(15, 9, 0), "past today -> tomorrow")
+        check(UsageLimit.resetDate(from: "You've hit your weekly limit · resets Mon 12:00am", now: now, calendar: cal) == at(19, 0, 0))
+        check(UsageLimit.resetDate(from: "API Error: Rate limit reached", now: now, calendar: cal) == nil)
+    }
+
     func testOldInstallNeedsUpgrade() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("s-\(UUID().uuidString).json")
         let old = #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"\"/x/rungrinh\" hook claude"}]}]}}"#
@@ -520,6 +566,9 @@ await run("testDoneSkippedWhenUserInClaudesWindow") { try await QuestionWaitTest
 await run("testDonePushesWhenUserBusyElsewhere") { try await QuestionWaitTests().testDonePushesWhenUserBusyElsewhere() }
 await run("testShortTaskStillLoggedRightAway") { try await QuestionWaitTests().testShortTaskStillLoggedRightAway() }
 await run("testIdlePromptSkippedWhenUserInClaudesWindow") { try await QuestionWaitTests().testIdlePromptSkippedWhenUserInClaudesWindow() }
+await run("testStopFailurePushesRightAway") { try await QuestionWaitTests().testStopFailurePushesRightAway() }
+await run("testStopFailureSkippedWhenUserInClaudesWindow") { try await QuestionWaitTests().testStopFailureSkippedWhenUserInClaudesWindow() }
+await run("testUsageLimitResetDate") { QuestionWaitTests().testUsageLimitResetDate() }
 await run("testOldInstallNeedsUpgrade") { try QuestionWaitTests().testOldInstallNeedsUpgrade() }
 print("UpdaterTests")
 await run("testVersionCompare") { UpdaterTests().testVersionCompare() }

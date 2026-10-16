@@ -21,7 +21,7 @@ Usage:
 Config keys: enabled, provider (bark|ntfy), bark.key, bark.server, bark.sound, bark.level,
   ntfy.server, ntfy.topic, ntfy.token, ntfy.priority, minTaskSeconds, cooldownSeconds,
   onlyWhenIdle, idleSeconds, quietHours.enabled, quietHours.start, quietHours.end (minutes),
-  events.stop, events.notification, doneDelaySeconds, askDelaySeconds, askReminderSeconds (0 = no reminder), autoUpdate
+  events.stop, events.notification, events.error, doneDelaySeconds, askDelaySeconds, askReminderSeconds (0 = no reminder), autoUpdate
 """
 
 func fail(_ text: String, code: Int32 = 1) -> Never {

@@ -25,6 +25,8 @@ public struct Paths: Sendable {
     public var waits: URL { state.appendingPathComponent("waits") }
     /// Tool calls that started but haven't finished: calls/<session>/<tool_use_id>.
     public var calls: URL { state.appendingPathComponent("calls") }
+    /// Sessions stopped by an API error: interrupted/<session>.json.
+    public var interrupted: URL { state.appendingPathComponent("interrupted") }
 
     public func ensureDirs() throws {
         try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)

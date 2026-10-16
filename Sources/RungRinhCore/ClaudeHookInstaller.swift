@@ -4,7 +4,8 @@ import Foundation
 public struct ClaudeHookInstaller: Sendable {
     /// PreToolUse / PostToolUse / SessionEnd tell us a question was answered (or abandoned),
     /// so the delayed "Claude is waiting" push is dropped.
-    public static let events = ["UserPromptSubmit", "Stop", "Notification", "PreToolUse", "PostToolUse", "SessionEnd"]
+    /// StopFailure replaces Stop when a turn ends on an API error.
+    public static let events = ["UserPromptSubmit", "Stop", "StopFailure", "Notification", "PreToolUse", "PostToolUse", "SessionEnd"]
 
     public let settingsURL: URL
 

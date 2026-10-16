@@ -73,6 +73,8 @@ public struct EventToggles: Codable, Equatable, Sendable {
     public var stop = true
     /// Claude Code is waiting for permission / input.
     public var notification = true
+    /// Claude Code stopped on an API error (login, usage limit, overload…).
+    public var error = true
 
     public init() {}
 
@@ -80,6 +82,7 @@ public struct EventToggles: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         stop = try c.decodeIfPresent(Bool.self, forKey: .stop) ?? true
         notification = try c.decodeIfPresent(Bool.self, forKey: .notification) ?? true
+        error = try c.decodeIfPresent(Bool.self, forKey: .error) ?? true
     }
 }
 

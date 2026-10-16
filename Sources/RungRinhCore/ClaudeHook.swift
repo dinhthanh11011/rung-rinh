@@ -16,6 +16,9 @@ public struct ClaudeHookInput: Decodable, Sendable {
     public var toolName: String?
     public var toolInput: ToolInput?
     public var toolUseId: String?
+    /// StopFailure: rate_limit, authentication_failed, overloaded… and e.g. "429 Too Many Requests".
+    public var error: String?
+    public var errorDetails: String?
 
     /// The parts of AskUserQuestion / ExitPlanMode input we show in a push.
     public struct ToolInput: Decodable, Sendable {
@@ -38,6 +41,8 @@ public struct ClaudeHookInput: Decodable, Sendable {
         case toolName = "tool_name"
         case toolInput = "tool_input"
         case toolUseId = "tool_use_id"
+        case error
+        case errorDetails = "error_details"
     }
 
     public init(from decoder: Decoder) throws {
@@ -54,6 +59,8 @@ public struct ClaudeHookInput: Decodable, Sendable {
         // Other tools' input has arbitrary shapes; never let it fail the whole decode.
         toolInput = try? c.decodeIfPresent(ToolInput.self, forKey: .toolInput)
         toolUseId = try? c.decodeIfPresent(String.self, forKey: .toolUseId)
+        error = try? c.decodeIfPresent(String.self, forKey: .error)
+        errorDetails = try? c.decodeIfPresent(String.self, forKey: .errorDetails)
     }
 }
 
@@ -68,18 +75,22 @@ public struct ClaudeHookHandler: Sendable {
     /// This process and its ancestors; the app Claude runs in is one of them.
     public let hostPids: @Sendable () -> [Int32]
     public let presence: Presence
+    /// Where the session's messaging socket / token come from.
+    public let environment: [String: String]
 
     public init(
         paths: Paths = Paths(),
         dispatcher: Dispatcher? = nil,
         hostPids: @escaping @Sendable () -> [Int32] = { HostApp.ancestorPids() },
         presence: Presence = Presence(),
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         spawnWaiter: (@Sendable (String, String) -> Void)? = nil
     ) {
         self.paths = paths
         self.dispatcher = dispatcher ?? Dispatcher(paths: paths)
         self.hostPids = hostPids
         self.presence = presence
+        self.environment = environment
         self.spawnWaiter = spawnWaiter ?? { session, token in
             if !Detached.spawn(Detached.selfPath, ["hook", "wait", session, token]) {
                 Log(paths: paths).write("[hook] could not start waiter")
@@ -95,6 +106,7 @@ public struct ClaudeHookHandler: Sendable {
         let state = StateStore(paths: paths)
         let pending = PendingStore(paths: paths)
         let calls = ToolCallStore(paths: paths)
+        let interrupted = InterruptedStore(paths: paths)
         let session = input.sessionId ?? "default"
         let project = input.cwd.map { ($0 as NSString).lastPathComponent } ?? "Claude Code"
 
@@ -110,6 +122,7 @@ public struct ClaudeHookHandler: Sendable {
         func endTurn() {
             pending.clear(session: session)
             calls.clear(session: session)
+            interrupted.clear(session: session)
         }
 
         switch input.hookEventName {
@@ -139,6 +152,27 @@ public struct ClaudeHookHandler: Sendable {
             await dispatcher.dispatch(
                 .claudeStop(duration: duration),
                 Message(title: title, body: Transcript.excerpt(summary), tags: ["white_check_mark"])
+            )
+
+        case "StopFailure":
+            endTurn()
+            state.clear(session: session)
+            let error = input.error ?? "unknown"
+            let record = Interrupted(
+                session: session, project: project, cwd: input.cwd, transcriptPath: input.transcriptPath,
+                error: error, message: input.lastAssistantMessage ?? input.errorDetails ?? error,
+                since: now, hostPids: hostPids(),
+                socket: environment["CLAUDE_CODE_MESSAGING_SOCKET"], token: environment["CLAUDE_CODE_MESSAGING_TOKEN"]
+            )
+            interrupted.save(record)
+            // They're looking at the error already.
+            if presence.isActive(in: record.hostPids, within: 30) {
+                History(paths: paths).append(HistoryEntry(source: Event.claudeError(error).source, title: record.title, sent: false, detail: "user in Claude's window"))
+                return
+            }
+            await dispatcher.dispatch(
+                .claudeError(error),
+                Message(title: record.title, body: Transcript.excerpt(record.message), priority: .high, tags: ["warning"])
             )
 
         case "SessionEnd":

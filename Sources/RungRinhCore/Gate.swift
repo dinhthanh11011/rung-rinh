@@ -5,6 +5,8 @@ public enum Event: Equatable, Sendable {
     case claudeStop(duration: TimeInterval?)
     /// Claude Code is waiting for permission or input.
     case claudeNotification
+    /// Claude Code stopped on an API error; the StopFailure `error` value.
+    case claudeError(String)
     /// A command wrapped by `rungrinh run` / the shell integration finished.
     case command(duration: TimeInterval)
     /// `rungrinh notify` from a script / CI.
@@ -16,6 +18,7 @@ public enum Event: Equatable, Sendable {
         switch self {
         case .claudeStop: return "claude.stop"
         case .claudeNotification: return "claude.notification"
+        case .claudeError: return "claude.error"
         case .command: return "command"
         case .manual: return "notify"
         case .test: return "test"
@@ -64,6 +67,8 @@ public enum Gate {
             }
         case .claudeNotification:
             if !config.events.notification { return .skip("notification event off") }
+        case .claudeError:
+            if !config.events.error { return .skip("error event off") }
         case .manual, .test:
             // Explicit pushes skip the idle and cooldown rules.
             return .send

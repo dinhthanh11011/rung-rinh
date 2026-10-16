@@ -143,6 +143,7 @@ struct ClaudeTab: View {
             Section("Báo khi") {
                 Toggle("Claude làm xong task", isOn: model.binding(\.events.stop))
                 Toggle("Claude cần cấp quyền hoặc chờ trả lời", isOn: model.binding(\.events.notification))
+                Toggle("Claude dừng vì lỗi (login, quota, server)", isOn: model.binding(\.events.error))
             }
 
             if model.config.events.stop {
